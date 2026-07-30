@@ -24,3 +24,17 @@ export const auditEvents = sqliteTable("audit_events", {
   payload: text("payload").notNull().default("{}"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const socialAccounts = sqliteTable("social_accounts", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  platform: text("platform").notNull(),
+  externalId: text("external_id").notNull().unique(),
+  displayName: text("display_name").notNull(),
+  username: text("username"),
+  pageId: text("page_id"),
+  tokenCiphertext: text("token_ciphertext").notNull(),
+  tokenIv: text("token_iv").notNull(),
+  status: text("status").notNull().default("connected"),
+  connectedAt: text("connected_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});

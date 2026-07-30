@@ -197,9 +197,9 @@ export default function Home() {
             <button className="close" onClick={() => setShowConfig(false)} aria-label="Chiudi">×</button>
             <p className="eyebrow">CONFIGURAZIONE</p><h2 id="config-title">Connetti un profilo</h2>
             <p className="muted">La connessione avviene tramite Meta OAuth. Orbit non vede né salva la tua password.</p>
-            <button className="connect instagram-button" onClick={() => notify("Flusso OAuth Instagram pronto per le credenziali Meta")}>◎ Continua con Instagram</button>
-            <button className="connect facebook-button" onClick={() => notify("Flusso OAuth Facebook pronto per le credenziali Meta")}>f Continua con Facebook</button>
-            <div className="safety-note"><strong>Protezione account attiva</strong><span>Nessun follow o unfollow automatico. Ogni suggerimento resta in coda finché non lo approvi.</span></div>
+            <a className="connect instagram-button" href="/api/meta/connect">◎ Connetti Instagram professionale</a>
+            <a className="connect facebook-button" href="/api/meta/connect">f Connetti Pagine Facebook</a>
+            <div className="safety-note"><strong>Automazione conforme attiva</strong><span>Analisi, scoring, pubblicazione e gestione delle interazioni supportate possono funzionare in automatico. Follow, unfollow e like personali restano assistiti perché Meta non offre queste azioni nelle API ufficiali.</span></div>
           </section>
         </div>
       )}
