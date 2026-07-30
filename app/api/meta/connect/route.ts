@@ -1,5 +1,3 @@
-import { cookies } from "next/headers";
-
 export const dynamic = "force-dynamic";
 
 const permissions = [
@@ -8,17 +6,30 @@ const permissions = [
   "instagram_manage_insights", "instagram_manage_comments", "instagram_content_publish",
 ];
 
+function base64Url(bytes: Uint8Array) {
+  let value = "";
+  for (const byte of bytes) value += String.fromCharCode(byte);
+  return btoa(value).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+async function signedState() {
+  const secret = process.env.META_OAUTH_STATE_SECRET;
+  if (!secret) throw new Error("META_OAUTH_STATE_SECRET non configurato");
+  const payload = `${Date.now()}.${crypto.randomUUID()}`;
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+  return `${payload}.${base64Url(new Uint8Array(signature))}`;
+}
+
 export async function GET(request: Request) {
   const appId = process.env.META_APP_ID;
   const redirectUri = process.env.META_REDIRECT_URI;
   const graphVersion = process.env.META_GRAPH_VERSION ?? "v25.0";
   if (!appId || !redirectUri) return Response.redirect(new URL("/?meta=not-configured", request.url));
 
-  const state = crypto.randomUUID();
-  const cookieStore = await cookies();
-  cookieStore.set("orbit_meta_oauth_state", state, {
-    httpOnly: true, secure: true, sameSite: "lax", maxAge: 600, path: "/",
-  });
+  const state = await signedState();
 
   const authorize = new URL(`https://www.facebook.com/${graphVersion}/dialog/oauth`);
   authorize.searchParams.set("client_id", appId);
