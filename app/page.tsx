@@ -84,8 +84,29 @@ export default function Home() {
   const refresh = useCallback(async (manual = false) => {
     try {
       if (manual) setLoading(true);
-      const response = await fetch("/api/meta/snapshot", { cache: "no-store" });
-      const body = await response.json() as Snapshot & { error?: string };
+      const sessionResponse = await fetch("/api/meta/snapshot", { cache: "no-store" });
+      const sessionText = await sessionResponse.text();
+      let session: { gatewayUrl?: string; accessToken?: string; error?: string };
+      try {
+        session = JSON.parse(sessionText) as typeof session;
+      } catch {
+        throw new Error("Il servizio di sincronizzazione non ha risposto correttamente");
+      }
+      if (!sessionResponse.ok || !session.gatewayUrl || !session.accessToken) {
+        throw new Error(session.error ?? "Sincronizzazione non disponibile");
+      }
+
+      const response = await fetch(session.gatewayUrl, {
+        headers: { authorization: `Bearer ${session.accessToken}` },
+        cache: "no-store",
+      });
+      const responseText = await response.text();
+      let body: Snapshot & { error?: string };
+      try {
+        body = JSON.parse(responseText) as typeof body;
+      } catch {
+        throw new Error("Il gateway Meta è temporaneamente lento: riprova tra poco");
+      }
       if (!response.ok) throw new Error(body.error ?? "Sincronizzazione non disponibile");
       setSnapshot(body);
       setSyncError("");
