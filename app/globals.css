@@ -40,3 +40,28 @@ h1,h2 { font-family:"Manrope",sans-serif; margin:0; letter-spacing:-.5px; } h1{f
 .toast{position:fixed;bottom:25px;left:50%;transform:translateX(-50%);background:#173d31;color:white;padding:12px 18px;border-radius:9px;font-size:12px;box-shadow:0 10px 30px #122b2244;z-index:30}
 @media(max-width:1050px){.hero-grid,.workspace-grid{grid-template-columns:1fr}.right-stack{grid-template-columns:1fr 1fr}.strategy{grid-template-columns:1fr 1fr}.strategy>p{grid-column:1/-1}}
 @media(max-width:760px){.app-shell{grid-template-columns:1fr}.sidebar{position:static;height:auto;padding:14px;flex-direction:row;align-items:center}.brand{padding:0;margin-right:auto}.sidebar nav{display:none}.sidebar-bottom{margin:0}.sidebar-bottom>.nav-item{display:none}.profile{border:0;margin:0;padding:0}.profile div,.profile .more{display:none}.content{padding:22px 16px 45px}.topbar{align-items:flex-start}.top-actions .icon-button{display:none}.primary{font-size:11px}.hero-grid,.workspace-grid,.right-stack,.strategy{grid-template-columns:1fr}.growth-card{padding:20px}.score-row{align-items:flex-start;gap:18px}.score-ring{width:95px;height:95px}.mini-stats{gap:20px;flex-wrap:wrap}.candidate{grid-template-columns:42px 1fr 40px 60px}.candidate .protect{display:none}.strategy-steps{margin-bottom:25px}.strategy>p{grid-column:auto}.review-card{grid-template-columns:54px 1fr}}
+
+.sync-copy{margin:7px 0 0;color:var(--muted);font-size:10px}
+.sync-error{color:#b85445}
+.refresh-button{font-size:20px;color:#245c49}
+.status.live{background:#d8f5e7;color:#176844}
+.account-empty{font-size:11px;color:var(--muted);padding:16px 0;margin:0}
+.live-pill{font-size:9px;font-weight:700;color:#1f7455;background:#e2f4eb;padding:5px 8px;border-radius:20px}
+.opportunities-focus{grid-template-columns:1fr}
+.opportunities-focus .right-stack{grid-template-columns:1fr 1fr}
+.strategy-live{grid-template-columns:.7fr 1.6fr .8fr}
+.strategy-cards{display:grid;gap:7px}
+.strategy-item{display:grid;grid-template-columns:25px 1fr;gap:8px;align-items:start;padding:8px;background:#f3f5f3;border-radius:8px}
+.strategy-item>span{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:#e2e8e5;color:#6d7f77;font-size:9px;font-weight:700}
+.strategy-item.ready>span{background:#c9f26b;color:#28473b}
+.strategy-item p{margin:0;display:grid}
+.strategy-item strong{font-size:10px}
+.strategy-item small{font-size:9px;color:var(--muted);line-height:1.35;margin-top:2px}
+
+@media(max-width:1050px){
+  .strategy-live{grid-template-columns:1fr 1fr}
+  .opportunities-focus .right-stack{grid-template-columns:1fr 1fr}
+}
+@media(max-width:760px){
+  .strategy-live,.opportunities-focus .right-stack{grid-template-columns:1fr}
+}
