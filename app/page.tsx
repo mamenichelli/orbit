@@ -10,6 +10,7 @@ type SocialAccount = {
   followers: number | null;
   mediaCount: number | null;
   syncStatus: "live" | "connected";
+  connectionType?: "instagram_login" | "facebook_login";
   updatedAt: string;
 };
 
@@ -131,6 +132,12 @@ export default function Home() {
     const params = new URLSearchParams(window.location.search);
     if (params.get("meta") === "connected") {
       setToast("Profili Meta collegati. Sincronizzazione avviata.");
+      window.setTimeout(() => setToast(""), 3200);
+      window.history.replaceState({}, "", window.location.pathname);
+      void refresh();
+    }
+    if (params.get("instagram") === "connected") {
+      setToast("Profilo Instagram professionale collegato direttamente.");
       window.setTimeout(() => setToast(""), 3200);
       window.history.replaceState({}, "", window.location.pathname);
       void refresh();
@@ -317,7 +324,9 @@ export default function Home() {
                       <span className={`social-icon ${account.platform}`}>{account.platform === "instagram" ? "◎" : "f"}</span>
                       <div>
                         <strong>{account.username ? `@${account.username.replace(/^@/, "")}` : account.displayName}</strong>
-                        <small>{account.platform === "instagram" ? "Instagram professionale" : "Pagina Facebook"}{account.followers !== null ? ` · ${formatNumber(account.followers)} follower` : ""}</small>
+                        <small>{account.platform === "instagram"
+                          ? account.connectionType === "instagram_login" ? "Instagram Creator diretto" : "Instagram professionale"
+                          : "Pagina Facebook"}{account.followers !== null ? ` · ${formatNumber(account.followers)} follower` : ""}</small>
                       </div>
                       <span className={account.syncStatus === "live" ? "status live" : "status"}>{account.syncStatus === "live" ? "Live" : "Connesso"}</span>
                     </div>
@@ -354,7 +363,7 @@ export default function Home() {
             <button className="close" onClick={() => setShowConfig(false)} aria-label="Chiudi">×</button>
             <p className="eyebrow">CONFIGURAZIONE</p><h2 id="config-title">Connetti o rinnova i profili</h2>
             <p className="muted">La connessione avviene tramite Meta OAuth. Orbit non vede né salva la tua password.</p>
-            <a className="connect instagram-button" href="/api/meta/connect">◎ Connetti Instagram professionale</a>
+            <a className="connect instagram-button" href="/api/instagram/connect">◎ Connetti il mio Instagram Creator</a>
             <a className="connect facebook-button" href="/api/meta/connect">f Connetti Pagine Facebook</a>
             <div className="safety-note"><strong>Automazione conforme</strong><span>Profili, metriche e interazioni si sincronizzano in automatico. Le azioni che Meta non espone vengono trasformate in una coda prioritaria, mai simulate con bot o password.</span></div>
           </section>
