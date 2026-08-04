@@ -301,7 +301,7 @@ def collect_users(stream: Iterable[Any]) -> tuple[list[str], dict[str, Any]]:
     return usernames, users
 
 
-def score_candidate(profile: Any) -> tuple[int, str]:
+def score_candidate(profile: Any) -> tuple[int, str, dict[str, Any]] | None:
     edge_followers = field_of(profile, "edge_followed_by", {}) or {}
     edge_following = field_of(profile, "edge_follow", {}) or {}
     edge_media = field_of(profile, "edge_owner_to_timeline_media", {}) or {}
@@ -318,20 +318,122 @@ def score_candidate(profile: Any) -> tuple[int, str]:
         int(field_of(profile, "media_count", 0) or field_of(edge_media, "count", 0) or 0),
     )
     ratio = following / max(followers, 1)
-    score = 42 + min(28, round(ratio * 14))
-    if 80 <= followers <= 5_000:
+    is_private = bool(field_of(profile, "is_private", False))
+    is_verified = bool(field_of(profile, "is_verified", False))
+    anonymous = bool(field_of(profile, "has_anonymous_profile_picture", False))
+    pronouns = field_of(profile, "pronouns", []) or []
+    if not isinstance(pronouns, list):
+        pronouns = [str(pronouns)]
+    public_text = " ".join(
+        str(value or "")
+        for value in (
+            field_of(profile, "biography", ""),
+            field_of(profile, "category_name", ""),
+            field_of(profile, "city_name", ""),
+            field_of(profile, "address_street", ""),
+            field_of(profile, "public_email", ""),
+            field_of(profile, "external_url", ""),
+            " ".join(str(item) for item in pronouns),
+        )
+    ).lower()
+    italian_strong = bool(re.search(
+        r"\b(italia|italiana|italiano|roma|milano|napoli|torino|bologna|firenze|palermo|"
+        r"genova|venezia|verona|bari|catania|sardegna|sicilia|toscana|lombardia|lazio)\b|\.it\b",
+        public_text,
+    ))
+    italian_markers = set(re.findall(
+        r"\b(sono|della|degli|anche|con|per|mamma|moglie|ragazza|donna|italiana|"
+        r"viaggi|moda|bellezza|fotografia|cucina|famiglia|imprenditrice)\b",
+        public_text,
+    ))
+    italian_signal = italian_strong or len(italian_markers) >= 2
+    female_self_declared = bool(re.search(
+        r"\b(she\s*/\s*her|lei|donna|ragazza|mamma|moglie|imprenditrice|"
+        r"fondatrice|fotografa|autrice|italiana)\b",
+        public_text,
+    ))
+    edges = field_of(edge_media, "edges", []) or []
+    timestamps = [
+        int(field_of(field_of(edge, "node", {}) or {}, "taken_at_timestamp", 0) or 0)
+        for edge in edges
+    ]
+    latest_timestamp = max(timestamps, default=0)
+    days_since_post = (
+        max(0, int((time.time() - latest_timestamp) / 86_400))
+        if latest_timestamp
+        else None
+    )
+
+    # Hard filters: these profiles consume follow slots but show little evidence
+    # that they reciprocate or are maintained by a real, active person.
+    if not italian_signal or anonymous or media_count < 3 or followers <= 0 or following < 50:
+        return None
+    if followers > 10_000 and ratio < 0.50:
+        return None
+    if followers > 500 and ratio < 0.20:
+        return None
+    if not is_private and days_since_post is not None and days_since_post > 120:
+        return None
+
+    score = 32
+    if ratio >= 1.0:
+        score += 30
+    elif ratio >= 0.65:
+        score += 25
+    elif ratio >= 0.40:
+        score += 18
+    elif ratio >= 0.25:
+        score += 10
+    else:
+        score += 4
+    if 50 <= followers <= 3_000:
         score += 12
-    elif followers > 20_000:
-        score -= 10
-    if media_count >= 9:
+    elif followers <= 8_000:
         score += 7
-    if not bool(field_of(profile, "is_private", False)):
-        score += 5
-    if bool(field_of(profile, "is_verified", False)):
-        score -= 7
+    if media_count >= 12:
+        score += 8
+    elif media_count >= 6:
+        score += 4
+    if days_since_post is not None:
+        if days_since_post <= 30:
+            score += 10
+        elif days_since_post <= 90:
+            score += 5
+    if is_verified:
+        score -= 6
+    if female_self_declared:
+        score += 8
     score = max(35, min(92, score))
-    reason = f"attivo, rapporto seguiti/follower {ratio:.2f}, {followers} follower"
-    return score, reason
+    activity_score = min(
+        100,
+        (40 if media_count >= 12 else 25 if media_count >= 6 else 15)
+        + (45 if days_since_post is not None and days_since_post <= 30 else 25 if days_since_post is not None and days_since_post <= 90 else 15 if is_private else 0)
+        + (15 if not anonymous else 0),
+    )
+    recency = (
+        f"ultimo post {days_since_post}g fa"
+        if days_since_post is not None
+        else "attivita privata non visibile"
+    )
+    reason = (
+        f"profilo italiano{' con identita femminile dichiarata' if female_self_declared else ''}, "
+        f"{media_count} post, {recency}, segue {following} profili su {followers} follower "
+        f"(rapporto {ratio:.2f})"
+    )
+    return score, reason, {
+        "followerCount": followers,
+        "followingCount": following,
+        "mediaCount": media_count,
+        "isPrivate": is_private,
+        "lastPostAt": (
+            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(latest_timestamp))
+            if latest_timestamp
+            else None
+        ),
+        "activityScore": activity_score,
+        "italianSignal": True,
+        "femaleSelfDeclared": female_self_declared,
+    }
 
 
 def discover_candidates(
@@ -419,8 +521,11 @@ def discover_candidates(
         time.sleep(random.uniform(2.0, 4.0))
 
     candidates: list[dict[str, Any]] = []
+    checked_profiles = 0
     for username, (short_user, seed) in list(raw.items()):
         if len(candidates) >= max_candidates:
+            break
+        if web_session and checked_profiles >= max(12, min(30, max_candidates * 2)):
             break
         try:
             user_id = str(
@@ -428,25 +533,33 @@ def discover_candidates(
                 or field_of(short_user, "id", "")
                 or client.user_id_from_username(username)
             )
-            # Relationship payloads already contain the signals needed for the
-            # first ranking. Avoid one extra profile request per candidate.
-            profile = short_user if web_session else client.user_info(user_id)
-            score, signal = score_candidate(profile)
-            candidates.append({
-                "externalId": f"ig:{user_id}",
-                "username": username,
-                "displayName": str(field_of(profile, "full_name", "") or username),
-                "sourceDetail": f"origine {seed}; {signal}",
-                "reason": signal,
-                "score": score,
-            })
+            profile = client.profile_by_username(username) if web_session else client.user_info(user_id)
+            checked_profiles += 1
+            scored = score_candidate(profile)
+            if scored is not None:
+                score, signal, metrics = scored
+                candidates.append({
+                    "externalId": f"ig:{user_id}",
+                    "username": username,
+                    "displayName": str(field_of(profile, "full_name", "") or username),
+                    "sourceDetail": f"origine {seed}; {signal}",
+                    "reason": signal,
+                    "score": score,
+                    **metrics,
+                })
         except InstagramRateLimited:
+            if candidates:
+                print("Arricchimento candidati interrotto dal limite Instagram; invio i profili gia verificati.")
+                break
             raise
         except Exception as exc:
             print(f"Profilo @{username} saltato: {type(exc).__name__}")
-        if not web_session:
-            time.sleep(random.uniform(1.2, 2.5))
-    return sorted(candidates, key=lambda item: int(item["score"]), reverse=True)
+        time.sleep(random.uniform(1.5, 2.8))
+    return sorted(
+        candidates,
+        key=lambda item: (bool(item.get("femaleSelfDeclared")), int(item["score"])),
+        reverse=True,
+    )
 
 
 def setup(config_path: Path, auth_mode: str) -> None:

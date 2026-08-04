@@ -105,7 +105,7 @@ type GrowthState = {
 type PlannerAction = {
   id: number;
   action_date: string;
-  action_type: "follow" | "follow_back" | "comment" | "unfollow" | "lost_follower";
+  action_type: "follow" | "follow_back" | "unfollow" | "lost_follower";
   probability: number;
   reason: string;
   status: "pending" | "completed" | "skipped";
@@ -120,6 +120,14 @@ type PlannerAction = {
   you_follow: number | null;
   review_after: string | null;
   unfollowed_you_at?: string | null;
+  follower_count?: number | null;
+  following_count?: number | null;
+  media_count?: number | null;
+  is_private?: number | null;
+  last_post_at?: string | null;
+  activity_score?: number | null;
+  italian_signal?: number | null;
+  female_self_declared?: number | null;
 };
 
 type PlannerState = {
@@ -127,13 +135,13 @@ type PlannerState = {
   actions: PlannerAction[];
   settings: { follows_per_day: number; comments_per_day: number; unfollows_per_day: number; review_days: number };
   totals: { targets?: number; followers?: number; following?: number; non_followers?: number; lost_followers?: number; exchange_targets?: number };
-  summary: { pending: number; completed: number; follows: number; comments: number; unfollows: number; lostFollowers: number };
+  summary: { pending: number; completed: number; follows: number; unfollows: number; lostFollowers: number };
   lastImport?: { followers_count: number; following_count: number; imported_at: string } | null;
   agentStatus?: { created_at: string; payload: string } | null;
   importResult?: { followers: number; following: number; compared: number } | null;
 };
 
-const nav = ["Oggi", "Opportunità", "Relazioni", "Contenuti", "Attività"];
+const nav = ["Oggi", "Opportunità", "Relazioni", "Attività"];
 const emptySnapshot: Snapshot = {
   accounts: [],
   opportunities: [],
@@ -160,9 +168,9 @@ const emptyGrowth: GrowthState = {
 const emptyPlanner: PlannerState = {
   date: "",
   actions: [],
-  settings: { follows_per_day: 12, comments_per_day: 10, unfollows_per_day: 8, review_days: 10 },
+  settings: { follows_per_day: 12, comments_per_day: 0, unfollows_per_day: 8, review_days: 10 },
   totals: {},
-  summary: { pending: 0, completed: 0, follows: 0, comments: 0, unfollows: 0, lostFollowers: 0 },
+  summary: { pending: 0, completed: 0, follows: 0, unfollows: 0, lostFollowers: 0 },
 };
 
 function initials(value: string) {
@@ -279,6 +287,7 @@ export default function Home() {
         profileUrl: candidate.profileUrl,
         interactions: candidate.interactions,
         score: candidate.score,
+        followerCount: candidate.followerCount,
         lastInteraction: candidate.lastInteraction,
         followsYou: candidate.followsYou,
         youFollow: candidate.youFollow,
@@ -314,22 +323,28 @@ export default function Home() {
   }, [applyGrowthState, notify]);
 
   useEffect(() => {
-    void refresh();
+    const initialRefresh = window.setTimeout(() => void refresh(), 0);
     const timer = window.setInterval(() => void refresh(), 5 * 60_000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearTimeout(initialRefresh);
+      window.clearInterval(timer);
+    };
   }, [refresh]);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("instagram") === "connected" || params.get("meta") === "connected") {
-      notify("Profilo collegato. Analisi automatica avviata.");
-      window.history.replaceState({}, "", window.location.pathname);
-      void refresh();
-    }
-    if (params.get("instagram") === "connection-failed") {
-      notify("Il collegamento Instagram non è stato completato.");
-      window.history.replaceState({}, "", window.location.pathname);
-    }
+    const callbackRefresh = window.setTimeout(() => {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("instagram") === "connected" || params.get("meta") === "connected") {
+        notify("Profilo collegato. Analisi automatica avviata.");
+        window.history.replaceState({}, "", window.location.pathname);
+        void refresh();
+      }
+      if (params.get("instagram") === "connection-failed") {
+        notify("Il collegamento Instagram non è stato completato.");
+        window.history.replaceState({}, "", window.location.pathname);
+      }
+    }, 0);
+    return () => window.clearTimeout(callbackRefresh);
   }, [notify, refresh]);
 
   const plannerRequest = async (payload: Record<string, unknown>, successMessage?: string) => {
@@ -384,15 +399,9 @@ export default function Home() {
     () => new Set(growth.queue.filter((item) => item.action_type === "priority_interaction" && item.status === "approved").map((item) => item.external_id)),
     [growth.queue],
   );
-  const visibleCandidates = snapshot.opportunities.filter((candidate) => !approvedIds.has(candidate.externalId));
-  const growthScore = useMemo(() => {
-    if (!snapshot.accounts.length) return 0;
-    const live = snapshot.accounts.some((account) => account.syncStatus === "live") ? 20 : 8;
-    const people = Math.min(30, snapshot.metrics.analyzedPeople * 3);
-    const content = Math.min(20, snapshot.recentMedia.length * 2);
-    const signals = Math.min(20, Math.round(Math.log10(snapshot.metrics.totalInteractions + 1) * 8));
-    return Math.min(100, 10 + live + people + content + signals);
-  }, [snapshot]);
+  const visibleCandidates = snapshot.opportunities.filter((candidate) =>
+    !approvedIds.has(candidate.externalId)
+    && (candidate.interactions > 0 || candidate.followerCount == null || candidate.followerCount <= 10_000));
 
   const persist = async (operation: "protect" | "unprotect" | "approve" | "complete", candidate: Candidate | QueueItem) => {
     const externalId = "externalId" in candidate ? candidate.externalId : candidate.external_id;
@@ -411,12 +420,6 @@ export default function Home() {
     }
   };
 
-  const strategies = snapshot.strategy.length ? snapshot.strategy : [
-    { key: "reciprocity", title: "Reciprocità selettiva", description: "In attesa dei primi segnali Instagram.", ready: false },
-    { key: "recency", title: "Finestra di recenza", description: "In attesa dei primi segnali Instagram.", ready: false },
-    { key: "consistency", title: "Continuità editoriale", description: "In attesa dei primi contenuti.", ready: false },
-  ];
-
   const pendingActions = planner.actions.filter((action) => action.status === "pending");
   const dailyActionPanel = (
     title: string,
@@ -433,9 +436,9 @@ export default function Home() {
           <div className="daily-action" key={action.id}>
             <div className="daily-person">
               <span className="avatar mini">{initials(action.display_name || action.username)}</span>
-              <div><strong>@{action.username}</strong><small>{action.reason}</small></div>
+              <div><strong>@{action.username}</strong><small>{action.reason}</small>{action.action_type === "follow" && action.follower_count != null && <small>{formatNumber(action.follower_count)} follower · segue {formatNumber(action.following_count)} · {formatNumber(action.media_count)} post · attività {formatNumber(action.activity_score)}/100{action.italian_signal ? " · Italia" : ""}{action.female_self_declared ? " · donna (bio)" : ""}</small>}</div>
             </div>
-            <div className="probability"><strong>{action.action_type === "lost_follower" ? "Rilevato" : `${action.probability}%`}</strong><span>{action.action_type === "lost_follower" ? formatDate(action.unfollowed_you_at) : "reciprocità stimata"}</span></div>
+            <div className="probability"><strong>{action.action_type === "lost_follower" ? "Rilevato" : `${action.probability}/100`}</strong><span>{action.action_type === "lost_follower" ? formatDate(action.unfollowed_you_at) : "punteggio reciprocità"}</span></div>
             <div className="daily-buttons">
               <a href={action.profile_url} target="_blank" rel="noreferrer">Apri profilo</a>
               <button onClick={() => void plannerRequest({ operation: "complete", actionId: action.id }, action.action_type === "lost_follower" ? "Segnalazione archiviata" : "Azione completata")}>{action.action_type === "lost_follower" ? "Archivia" : "Fatto"}</button>
@@ -450,16 +453,16 @@ export default function Home() {
   const candidatePanel = (
     <article className="panel opportunities">
       <div className="panel-head">
-        <div><p className="eyebrow">PRIORITÀ AUTOMATICHE</p><h2>Persone con cui interagire</h2></div>
+        <div><p className="eyebrow">PRIORITÀ AUTOMATICHE</p><h2>Profili con maggiore reciprocità</h2></div>
         <span className="live-pill">● LIVE</span>
       </div>
-      <p className="muted">Ranking calcolato da frequenza, recenza, commenti e relazione reciproca.</p>
+      <p className="muted">Prima chi ha già messo like o commentato; poi profili italiani attivi, privilegiando le donne che lo dichiarano nella bio. Esclusi account vuoti e grandi profili che seguono pochissime persone.</p>
       <div className="candidate-list">
-        {loading && !snapshot.opportunities.length && <div className="all-done">Sto leggendo profilo, contenuti e commenti…</div>}
+        {loading && !snapshot.opportunities.length && <div className="all-done">Sto verificando attività, relazioni e segnali di reciprocità…</div>}
         {!loading && !visibleCandidates.length && (
           <div className="all-done">
             {snapshot.accounts.length
-              ? "Profilo connesso. Ricollegalo con i permessi estesi oppure attendi i primi commenti sui contenuti."
+              ? "Profilo connesso. Attendi la prossima analisi delle relazioni o la prima interazione ricevuta."
               : "Collega Instagram professionale per iniziare."}
           </div>
         )}
@@ -520,7 +523,7 @@ export default function Home() {
         <nav aria-label="Navigazione principale">
           {nav.map((item, index) => (
             <button key={item} className={active === item ? "nav-item active" : "nav-item"} onClick={() => setActive(item)}>
-              <span className="nav-icon">{["✓", "✦", "♧", "▧", "↗"][index]}</span>{item}
+              <span className="nav-icon">{["✓", "✦", "♧", "↗"][index]}</span>{item}
               {item === "Oggi" && planner.summary.pending > 0 && <span className="badge">{planner.summary.pending}</span>}
               {item === "Opportunità" && snapshot.metrics.analyzedPeople > 0 && <span className="badge">{snapshot.metrics.analyzedPeople}</span>}
               {item === "Relazioni" && growth.review.queued > 0 && <span className="badge">{growth.review.queued}</span>}
@@ -546,20 +549,13 @@ export default function Home() {
           </div>
         </header>
 
-        {snapshot.capabilities.reauthorizationRecommended && snapshot.accounts.length > 0 && (
-          <section className="permission-banner">
-            <div><strong>Completa l’automazione Instagram</strong><span>Il login attuale è valido, ma va rinnovato una volta per autorizzare commenti, insight, messaggi e pubblicazione.</span></div>
-            <a href="/api/instagram/connect">Rinnova permessi</a>
-          </section>
-        )}
-
         {active === "Oggi" && (
           <>
             <section className="daily-hero">
               <div>
                 <p className="eyebrow">PIANO OPERATIVO · {planner.date || "OGGI"}</p>
                 <h2>{planner.summary.pending} azioni rimaste</h2>
-                <p>Segui l’ordine proposto: prima profili ad alta reciprocità, poi conversazioni calde, infine scrematura.</p>
+                <p>Segui l’ordine proposto: prima segnali reali, poi donne italiane attive con alta reciprocità stimata, infine scrematura.</p>
               </div>
               <div className="daily-progress">
                 <strong>{planner.summary.completed}</strong><span>completate</span>
@@ -567,7 +563,6 @@ export default function Home() {
               </div>
               <div className="daily-summary">
                 <span><strong>{planner.summary.follows}</strong> follow</span>
-                <span><strong>{planner.summary.comments}</strong> commenti</span>
                 <span><strong>{planner.summary.unfollows}</strong> defollow</span>
                 <span><strong>{planner.summary.lostFollowers}</strong> ti hanno defollowato</span>
               </div>
@@ -575,7 +570,6 @@ export default function Home() {
 
             <section className="daily-grid">
               {dailyActionPanel("Chi seguire", "FOLLOW STRATEGICI", ["follow", "follow_back"], "Aggiungi target o importa le liste Instagram per creare i follow di oggi.")}
-              {dailyActionPanel("Chi commentare", "CONVERSAZIONI CALDE", ["comment"], "I profili compariranno quando commentano o interagiscono con i tuoi contenuti.")}
               {dailyActionPanel("Chi defolloware", "SCREMATURA PROTETTA", ["unfollow"], "Importa Follower e Seguiti: Orbit escluderà gli intoccabili e proporrà solo i non reciproci.")}
               {dailyActionPanel("Chi ti ha defollowato", "CONTROLLO PERDITE", ["lost_follower"], planner.lastImport ? "Nessun nuovo defollow rilevato rispetto al confronto precedente." : "Importa oggi le liste; dal confronto successivo Orbit rileverà ogni follower perso, anche se non lo segui.")}
             </section>
@@ -583,9 +577,9 @@ export default function Home() {
             <section className="today-footer-grid">
               <article className="panel routine-panel">
                 <p className="eyebrow">STRATEGIA QUOTIDIANA</p><h2>Routine di crescita</h2>
-                <div className="routine-step"><span>1</span><div><strong>Follow selettivo</strong><small>Apri il profilo, verifica affinità e attività recente, poi segui soltanto target coerenti.</small></div></div>
-                <div className="routine-step"><span>2</span><div><strong>Commento specifico</strong><small>Evita emoji generiche: cita un dettaglio del contenuto e aggiungi un punto di vista.</small></div></div>
-                <div className="routine-step"><span>3</span><div><strong>Reciprocità entro 10 giorni</strong><small>Il follow completato entra automaticamente nella finestra di revisione.</small></div></div>
+                <div className="routine-step"><span>1</span><div><strong>Reciprocità osservata</strong><small>Prima chi ha già lasciato like o commenti; poi profili vicini con segnali favorevoli.</small></div></div>
+                <div className="routine-step"><span>2</span><div><strong>Italia, principalmente donne</strong><small>Richiede segnali italiani pubblici e privilegia l’identità femminile dichiarata nella bio; esclude account vuoti, inattivi o sproporzionati.</small></div></div>
+                <div className="routine-step"><span>3</span><div><strong>Controllo dopo 10 giorni</strong><small>Ogni follow completato entra automaticamente nella finestra di revisione.</small></div></div>
               </article>
               <article className="panel relation-snapshot">
                 <p className="eyebrow">BASE RELAZIONI</p><h2>Dati per decidere</h2>
@@ -595,49 +589,6 @@ export default function Home() {
                 <div className="relation-number"><span>Da gruppi di scambio</span><strong>{formatNumber(planner.totals.exchange_targets)}</strong></div>
                 <button className="primary" onClick={() => setActive("Relazioni")}>Importa o aggiungi target</button>
               </article>
-            </section>
-          </>
-        )}
-
-        {active === "Panoramica" && (
-          <>
-            <section className="hero-grid">
-              <article className="growth-card">
-                <div className="section-heading"><div><p className="eyebrow">GROWTH SCORE LIVE</p><h2>{snapshot.accounts.length ? "Il motore di analisi è attivo" : "Collega il primo profilo"}</h2></div><span className="trend">{snapshot.metrics.connectedAccounts} account</span></div>
-                <div className="score-row">
-                  <div className="score-ring" style={{ background: `conic-gradient(#3b8e70 0 ${growthScore}%,#e7eeeb ${growthScore}%)` }}><div><strong>{growthScore}</strong><span>/100</span></div></div>
-                  <div className="score-copy">
-                    <p>Orbit aggiorna automaticamente dati, contenuti e ranking. Il punteggio cresce quando aumenta la qualità dei segnali reali.</p>
-                    <div className="mini-stats">
-                      <div><span>Follower rilevati</span><strong>{formatNumber(snapshot.metrics.knownFollowers)}</strong><small>dato live Instagram</small></div>
-                      <div><span>Persone analizzate</span><strong>{snapshot.metrics.analyzedPeople}</strong><small>commenti e messaggi</small></div>
-                      <div><span>Interazioni contenuti</span><strong>{formatNumber(snapshot.metrics.totalInteractions)}</strong><small>like + commenti</small></div>
-                    </div>
-                  </div>
-                </div>
-              </article>
-              <article className="review-card">
-                <div className="calendar-icon"><span>{growth.review.dueInDays}</span><small>GIORNI</small></div>
-                <div><p className="eyebrow">REVISIONE RELAZIONI</p><h2>Scrematura protetta</h2><p>La revisione si rigenera ogni 10 giorni ed esclude sempre gli account intoccabili.</p></div>
-                <button className="secondary" onClick={() => setActive("Relazioni")}>Apri la revisione <span>→</span></button>
-              </article>
-            </section>
-            <section className="workspace-grid">
-              {candidatePanel}
-              <aside className="right-stack">
-                {accountPanel}
-                <article className="panel activity-panel">
-                  <div className="panel-head"><div><p className="eyebrow">MOTORE AUTOMATICO</p><h2>Stato operativo</h2></div></div>
-                  <div className="activity"><span className="activity-mark green">↻</span><p><strong>Sincronizzazione attiva</strong><small>Aggiornamento ogni 5 minuti</small></p><time>live</time></div>
-                  <div className="activity"><span className="activity-mark violet">✦</span><p><strong>Ranking interazioni</strong><small>Recenza, frequenza e reciprocità</small></p><time>{snapshot.metrics.analyzedPeople}</time></div>
-                  <div className="activity"><span className="activity-mark amber">♧</span><p><strong>Lista intoccabili</strong><small>Esclusa da ogni revisione</small></p><time>{growth.protectedProfiles.length}</time></div>
-                </article>
-              </aside>
-            </section>
-            <section className="strategy strategy-live">
-              <div><p className="eyebrow">STRATEGIA COMPORTAMENTALE</p><h2>Relazioni che convertono</h2></div>
-              <div className="strategy-cards">{strategies.map((item, index) => <div className={item.ready ? "strategy-item ready" : "strategy-item"} key={item.key}><span>{index + 1}</span><p><strong>{item.title}</strong><small>{item.description}</small></p></div>)}</div>
-              <p>Orbit privilegia chi mostra interesse reale e trasforma i segnali in una lista operativa. Le API Meta non consentono follow, unfollow o like automatici: queste azioni restano guidate per proteggere l’account.</p>
             </section>
           </>
         )}
@@ -667,7 +618,7 @@ export default function Home() {
             </article>
             <article className="panel agent-panel">
               <p className="eyebrow">AGENTE OPEN SOURCE</p><h2>Sincronizzazione automatica</h2>
-              <p className="muted">Il connettore locale gratuito scarica follower e seguiti, elimina chi già segui e prepara candidati da audience affini ogni 6 ore.</p>
+              <p className="muted">Il connettore locale gratuito scarica follower e seguiti, elimina chi già segui e ogni 6 ore prepara candidati italiani attivi, privilegiando le donne che lo dichiarano nella bio.</p>
               <div className={planner.agentStatus ? "agent-state active" : "agent-state"}>
                 <span>{planner.agentStatus ? "● ATTIVO" : "○ DA ATTIVARE"}</span>
                 <strong>{planner.agentStatus ? `Ultimo invio ${formatDate(planner.agentStatus.created_at)}` : "Esegui una volta agent/setup.ps1 sul PC"}</strong>
@@ -711,26 +662,6 @@ export default function Home() {
           </section>
         )}
 
-        {active === "Contenuti" && (
-          <section className="module-grid content-module">
-            <article className="panel media-panel">
-              <div className="panel-head"><div><p className="eyebrow">PERFORMANCE REALI</p><h2>Contenuti da replicare</h2></div><span className="trend">{snapshot.recentMedia.length} analizzati</span></div>
-              <p className="muted">Ordinati per like + commenti ponderati. I commenti valgono di più perché indicano coinvolgimento attivo.</p>
-              {!snapshot.recentMedia.length && <div className="all-done">Rinnova i permessi Instagram per analizzare i contenuti.</div>}
-              {snapshot.recentMedia.slice(0, 12).map((media, index) => (
-                <div className="media-row" key={media.id}><span className="rank-number">{index + 1}</span><div><strong>{media.caption}</strong><small>{media.mediaType} · {formatDate(media.timestamp)}</small></div><div className="media-stats"><span>♥ {formatNumber(media.likeCount)}</span><span>● {formatNumber(media.commentsCount)}</span></div>{media.permalink && <a href={media.permalink} target="_blank" rel="noreferrer">Apri</a>}</div>
-              ))}
-            </article>
-            <article className="panel playbook-panel">
-              <p className="eyebrow">PIANO DI CRESCITA</p><h2>Schema editoriale</h2>
-              <div className="playbook-step"><span>1</span><div><strong>Hook riconoscibile</strong><small>Apri con un problema specifico o un risultato concreto, senza promesse vaghe.</small></div></div>
-              <div className="playbook-step"><span>2</span><div><strong>Serie ricorrente</strong><small>Trasforma il formato migliore in un appuntamento riconoscibile.</small></div></div>
-              <div className="playbook-step"><span>3</span><div><strong>CTA conversazionale</strong><small>Chiudi con una domanda facile e pertinente per aumentare commenti autentici.</small></div></div>
-              <div className="playbook-step"><span>4</span><div><strong>Risposta rapida</strong><small>Rispondi entro 24 ore e privilegia chi torna più volte.</small></div></div>
-            </article>
-          </section>
-        )}
-
         {active === "Attività" && (
           <section className="module-grid">
             <article className="panel audit-panel">
@@ -741,9 +672,10 @@ export default function Home() {
             <article className="panel capability-panel">
               <p className="eyebrow">COPERTURA API</p><h2>Dati disponibili</h2>
               <div className="capability-row"><span>Profilo e follower</span><strong className={snapshot.accounts.some((account) => account.capabilities.profile) ? "ok" : "wait"}>{snapshot.accounts.some((account) => account.capabilities.profile) ? "Attivo" : "In attesa"}</strong></div>
-              <div className="capability-row"><span>Contenuti recenti</span><strong className={snapshot.accounts.some((account) => account.capabilities.media) ? "ok" : "wait"}>{snapshot.accounts.some((account) => account.capabilities.media) ? "Attivo" : "Rinnova"}</strong></div>
-              <div className="capability-row"><span>Commenti e ranking</span><strong className={snapshot.capabilities.comments ? "ok" : "wait"}>{snapshot.capabilities.comments ? "Attivo" : "Rinnova"}</strong></div>
-              <div className="capability-row"><span>Insight account</span><strong className={snapshot.capabilities.insights ? "ok" : "wait"}>{snapshot.capabilities.insights ? "Attivo" : "Rinnova"}</strong></div>
+              <div className="capability-row"><span>Follower e seguiti</span><strong className={planner.lastImport || planner.agentStatus ? "ok" : "wait"}>{planner.lastImport || planner.agentStatus ? "Attivo" : "In attesa"}</strong></div>
+              <div className="capability-row"><span>Filtro Italia e attività</span><strong className={planner.agentStatus ? "ok" : "wait"}>{planner.agentStatus ? "Attivo" : "In attesa"}</strong></div>
+              <div className="capability-row"><span>Revisione a 10 giorni</span><strong className="ok">Attiva</strong></div>
+              <div className="capability-row"><span>Lista intoccabili</span><strong className="ok">Attiva</strong></div>
             </article>
           </section>
         )}
@@ -754,18 +686,17 @@ export default function Home() {
           <section className="modal" role="dialog" aria-modal="true" aria-labelledby="config-title">
             <button className="close" onClick={() => setShowConfig(false)} aria-label="Chiudi">×</button>
             <p className="eyebrow">CONFIGURAZIONE</p><h2 id="config-title">Connetti o rinnova i profili</h2>
-            <p className="muted">Ricollega Instagram una volta per autorizzare commenti, insight, messaggi e pubblicazione. Orbit non vede né salva la password.</p>
+            <p className="muted">Collega Instagram per leggere i dati autorizzati del profilo. Il connettore locale usa una sessione custodita sul PC e Orbit non salva la password.</p>
             <a className="connect instagram-button" href="/api/instagram/connect">◎ Connetti / rinnova Instagram Creator</a>
             <a className="connect facebook-button" href="/api/meta/connect">f Connetti Pagine Facebook</a>
             <div className="planner-settings">
               <strong>Quote giornaliere</strong>
               <div>
                 <label><span>Follow</span><input type="number" min="1" max="30" value={planner.settings.follows_per_day} onChange={(event) => setPlanner((current) => ({ ...current, settings: { ...current.settings, follows_per_day: Number(event.target.value) } }))} /></label>
-                <label><span>Commenti</span><input type="number" min="1" max="30" value={planner.settings.comments_per_day} onChange={(event) => setPlanner((current) => ({ ...current, settings: { ...current.settings, comments_per_day: Number(event.target.value) } }))} /></label>
                 <label><span>Defollow</span><input type="number" min="1" max="30" value={planner.settings.unfollows_per_day} onChange={(event) => setPlanner((current) => ({ ...current, settings: { ...current.settings, unfollows_per_day: Number(event.target.value) } }))} /></label>
                 <label><span>Revisione</span><input type="number" min="1" max="30" value={planner.settings.review_days} onChange={(event) => setPlanner((current) => ({ ...current, settings: { ...current.settings, review_days: Number(event.target.value) } }))} /></label>
               </div>
-              <button className="secondary" onClick={() => void plannerRequest({ operation: "settings", settings: { followsPerDay: planner.settings.follows_per_day, commentsPerDay: planner.settings.comments_per_day, unfollowsPerDay: planner.settings.unfollows_per_day, reviewDays: planner.settings.review_days } }, "Quote giornaliere salvate")}>Salva quote</button>
+              <button className="secondary" onClick={() => void plannerRequest({ operation: "settings", settings: { followsPerDay: planner.settings.follows_per_day, unfollowsPerDay: planner.settings.unfollows_per_day, reviewDays: planner.settings.review_days } }, "Quote giornaliere salvate")}>Salva quote</button>
             </div>
             <div className="safety-note"><strong>Automazione conforme</strong><span>Analisi, ranking, revisione e priorità sono automatici. Follow, unfollow e like personali non sono disponibili nelle API ufficiali e restano azioni guidate.</span></div>
           </section>

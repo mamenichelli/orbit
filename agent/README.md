@@ -27,9 +27,10 @@ Lo script:
 2. salva una sessione Instagram sul PC;
 3. scarica follower e seguiti;
 4. esclude follower attuali e persone già seguite;
-5. analizza follower recenti dei profili seed;
-6. invia alla dashboard la lista ordinata;
-7. registra l'attività pianificata `Orbit Instagram Sync` ogni 6 ore.
+5. analizza follower recenti dei profili seed e apre i profili per verificarne attività e rapporto seguiti/follower;
+6. mantiene solo profili con segnali pubblici italiani, scarta account vuoti, inattivi o sproporzionati e privilegia le donne che lo dichiarano nella bio;
+7. invia alla dashboard la lista ordinata;
+8. registra l'attività pianificata `Orbit Instagram Sync` ogni 6 ore.
 
 Per forzare una sincronizzazione:
 

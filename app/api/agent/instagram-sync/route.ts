@@ -9,6 +9,14 @@ type DiscoveryCandidate = {
   sourceDetail?: string;
   score?: number;
   reason?: string;
+  followerCount?: number;
+  followingCount?: number;
+  mediaCount?: number;
+  isPrivate?: boolean;
+  lastPostAt?: string | null;
+  activityScore?: number;
+  italianSignal?: boolean;
+  femaleSelfDeclared?: boolean;
 };
 
 function cleanUsername(value: string) {
@@ -122,7 +130,18 @@ async function importRelations(followerValues: string[], followingValues: string
 async function importCandidates(candidates: DiscoveryCandidate[], followers: Set<string>, following: Set<string>) {
   const usable = candidates.filter((candidate) => {
     const username = cleanUsername(candidate.username ?? "");
-    return username && !followers.has(username) && !following.has(username);
+    const followerCount = Math.max(0, Math.round(candidate.followerCount ?? 0));
+    const followingCount = Math.max(0, Math.round(candidate.followingCount ?? 0));
+    const mediaCount = Math.max(0, Math.round(candidate.mediaCount ?? 0));
+    const ratio = followingCount / Math.max(followerCount, 1);
+    return username
+      && !followers.has(username)
+      && !following.has(username)
+      && candidate.italianSignal === true
+      && mediaCount >= 3
+      && followingCount >= 50
+      && !(followerCount > 10_000 && ratio < 0.5)
+      && !(followerCount > 500 && ratio < 0.2);
   }).slice(0, 200);
 
   for (let offset = 0; offset < usable.length; offset += 40) {
@@ -131,14 +150,23 @@ async function importCandidates(candidates: DiscoveryCandidate[], followers: Set
       const score = Math.max(0, Math.min(100, Math.round(candidate.score ?? 50)));
       return env.DB.prepare(`INSERT INTO growth_targets
         (external_id, username, display_name, platform, profile_url, source, source_detail,
-         interactions, score, follows_you, you_follow, updated_at)
-        VALUES (?, ?, ?, 'Instagram', ?, 'open_source_discovery', ?, 0, ?, 0, 0, CURRENT_TIMESTAMP)
+         interactions, score, follower_count, following_count, media_count, is_private,
+         last_post_at, activity_score, italian_signal, female_self_declared, follows_you, you_follow, updated_at)
+        VALUES (?, ?, ?, 'Instagram', ?, 'open_source_discovery', ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, CURRENT_TIMESTAMP)
         ON CONFLICT(username) DO UPDATE SET
           display_name = excluded.display_name,
           profile_url = excluded.profile_url,
           source = excluded.source,
           source_detail = excluded.source_detail,
           score = excluded.score,
+          follower_count = excluded.follower_count,
+          following_count = excluded.following_count,
+          media_count = excluded.media_count,
+          is_private = excluded.is_private,
+          last_post_at = excluded.last_post_at,
+          activity_score = excluded.activity_score,
+          italian_signal = excluded.italian_signal,
+          female_self_declared = excluded.female_self_declared,
           follows_you = 0,
           you_follow = 0,
           updated_at = CURRENT_TIMESTAMP`)
@@ -149,6 +177,14 @@ async function importCandidates(candidates: DiscoveryCandidate[], followers: Set
           `https://www.instagram.com/${username}/`,
           candidate.sourceDetail || candidate.reason || "scoperta automatica",
           score,
+          Math.max(0, Math.round(candidate.followerCount ?? 0)),
+          Math.max(0, Math.round(candidate.followingCount ?? 0)),
+          Math.max(0, Math.round(candidate.mediaCount ?? 0)),
+          candidate.isPrivate == null ? null : candidate.isPrivate ? 1 : 0,
+          candidate.lastPostAt ?? null,
+          Math.max(0, Math.min(100, Math.round(candidate.activityScore ?? 0))),
+          candidate.italianSignal == null ? null : candidate.italianSignal ? 1 : 0,
+          candidate.femaleSelfDeclared == null ? null : candidate.femaleSelfDeclared ? 1 : 0,
         );
     });
     if (statements.length) await env.DB.batch(statements);

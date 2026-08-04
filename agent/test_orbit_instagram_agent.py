@@ -1,4 +1,5 @@
 import tempfile
+import time
 from pathlib import Path
 from unittest import TestCase, mock
 
@@ -102,11 +103,27 @@ class InstagramWebSessionTests(TestCase):
 
     def test_web_discovery_uses_second_degree_profiles(self):
         candidate = {"pk": "99", "username": "candidate"}
+        profile = {
+            "id": "99",
+            "username": "candidate",
+            "full_name": "Candidate",
+            "biography": "Mamma italiana a Milano, moda e viaggi",
+            "follower_count": 800,
+            "following_count": 900,
+            "media_count": 20,
+            "is_private": False,
+            "has_anonymous_profile_picture": False,
+            "edge_owner_to_timeline_media": {
+                "count": 20,
+                "edges": [{"node": {"taken_at_timestamp": int(time.time()) - 86_400}}],
+            },
+        }
         client = mock.Mock()
         client._orbit_auth_mode = "web"
         client._orbit_user_id = "1234567890"
         client.user_id = "1234567890"
         client.relation_users.return_value = [candidate]
+        client.profile_by_username.return_value = profile
 
         with mock.patch.object(orbit.time, "sleep"):
             result = orbit.discover_candidates(
@@ -120,5 +137,44 @@ class InstagramWebSessionTests(TestCase):
             )
 
         self.assertEqual([item["username"] for item in result], ["candidate"])
+        self.assertTrue(result[0]["italianSignal"])
+        self.assertTrue(result[0]["femaleSelfDeclared"])
         client.relation_users.assert_called_once_with("55", "followers", amount=40)
-        client.profile_by_username.assert_not_called()
+        client.profile_by_username.assert_called_once_with("candidate")
+
+    def test_score_rejects_large_profile_that_follows_very_few(self):
+        profile = {
+            "biography": "Creator italiana di Milano",
+            "follower_count": 16_000,
+            "following_count": 120,
+            "media_count": 80,
+            "is_private": True,
+        }
+
+        self.assertIsNone(orbit.score_candidate(profile))
+
+    def test_score_rejects_profile_without_italian_signals(self):
+        profile = {
+            "biography": "Travel photographer from London",
+            "follower_count": 700,
+            "following_count": 800,
+            "media_count": 30,
+            "is_private": True,
+        }
+
+        self.assertIsNone(orbit.score_candidate(profile))
+
+    def test_score_marks_female_identity_only_from_public_bio(self):
+        profile = {
+            "biography": "Imprenditrice italiana, mamma e fotografa a Roma",
+            "follower_count": 950,
+            "following_count": 1_100,
+            "media_count": 25,
+            "is_private": True,
+        }
+
+        scored = orbit.score_candidate(profile)
+
+        self.assertIsNotNone(scored)
+        assert scored is not None
+        self.assertTrue(scored[2]["femaleSelfDeclared"])

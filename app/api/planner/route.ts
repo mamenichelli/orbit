@@ -10,6 +10,14 @@ type CandidateInput = {
   profileUrl?: string | null;
   interactions?: number;
   score?: number;
+  followerCount?: number | null;
+  followingCount?: number | null;
+  mediaCount?: number | null;
+  isPrivate?: boolean | null;
+  lastPostAt?: string | null;
+  activityScore?: number | null;
+  italianSignal?: boolean | null;
+  femaleSelfDeclared?: boolean | null;
   lastInteraction?: string | null;
   followsYou?: boolean | null;
   youFollow?: boolean | null;
@@ -55,6 +63,14 @@ async function ensureSchema() {
       source_detail TEXT,
       interactions INTEGER NOT NULL DEFAULT 0,
       score INTEGER NOT NULL DEFAULT 0,
+      follower_count INTEGER,
+      following_count INTEGER,
+      media_count INTEGER,
+      is_private INTEGER,
+      last_post_at TEXT,
+      activity_score INTEGER,
+      italian_signal INTEGER,
+      female_self_declared INTEGER,
       follows_you INTEGER,
       you_follow INTEGER,
       previous_follows_you INTEGER,
@@ -98,14 +114,15 @@ async function ensureSchema() {
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS planner_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       follows_per_day INTEGER NOT NULL DEFAULT 12,
-      comments_per_day INTEGER NOT NULL DEFAULT 10,
+      comments_per_day INTEGER NOT NULL DEFAULT 0,
       unfollows_per_day INTEGER NOT NULL DEFAULT 8,
       review_days INTEGER NOT NULL DEFAULT 10,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
     env.DB.prepare(`INSERT INTO planner_settings
       (id, follows_per_day, comments_per_day, unfollows_per_day, review_days)
-      VALUES (1, 12, 10, 8, 10) ON CONFLICT(id) DO NOTHING`),
+      VALUES (1, 12, 0, 8, 10) ON CONFLICT(id) DO NOTHING`),
+    env.DB.prepare("UPDATE planner_settings SET comments_per_day = 0 WHERE id = 1"),
   ]);
 }
 
@@ -113,7 +130,7 @@ async function readSettings() {
   return await env.DB.prepare(`SELECT follows_per_day, comments_per_day, unfollows_per_day, review_days
     FROM planner_settings WHERE id = 1`).first<Settings>() ?? {
     follows_per_day: 12,
-    comments_per_day: 10,
+    comments_per_day: 0,
     unfollows_per_day: 8,
     review_days: 10,
   };
@@ -126,13 +143,22 @@ async function syncCandidates(candidates: CandidateInput[]) {
       const username = cleanUsername(candidate.username ?? "");
       return env.DB.prepare(`INSERT INTO growth_targets
         (external_id, username, display_name, platform, profile_url, source, interactions, score,
-         follows_you, you_follow, last_interaction, updated_at)
-        VALUES (?, ?, ?, ?, ?, 'organic_interaction', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         follower_count, following_count, media_count, is_private, last_post_at, activity_score,
+         italian_signal, female_self_declared, follows_you, you_follow, last_interaction, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'organic_interaction', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(username) DO UPDATE SET
           display_name = excluded.display_name,
           profile_url = COALESCE(excluded.profile_url, growth_targets.profile_url),
           interactions = MAX(growth_targets.interactions, excluded.interactions),
           score = MAX(growth_targets.score, excluded.score),
+          follower_count = COALESCE(excluded.follower_count, growth_targets.follower_count),
+          following_count = COALESCE(excluded.following_count, growth_targets.following_count),
+          media_count = COALESCE(excluded.media_count, growth_targets.media_count),
+          is_private = COALESCE(excluded.is_private, growth_targets.is_private),
+          last_post_at = COALESCE(excluded.last_post_at, growth_targets.last_post_at),
+          activity_score = COALESCE(excluded.activity_score, growth_targets.activity_score),
+          italian_signal = COALESCE(excluded.italian_signal, growth_targets.italian_signal),
+          female_self_declared = COALESCE(excluded.female_self_declared, growth_targets.female_self_declared),
           follows_you = COALESCE(excluded.follows_you, growth_targets.follows_you),
           you_follow = COALESCE(excluded.you_follow, growth_targets.you_follow),
           last_interaction = COALESCE(excluded.last_interaction, growth_targets.last_interaction),
@@ -145,6 +171,14 @@ async function syncCandidates(candidates: CandidateInput[]) {
           candidate.profileUrl ?? `https://www.instagram.com/${username}/`,
           Math.max(0, candidate.interactions ?? 0),
           Math.max(0, Math.min(100, Math.round(candidate.score ?? 0))),
+          candidate.followerCount == null ? null : Math.max(0, Math.round(candidate.followerCount)),
+          candidate.followingCount == null ? null : Math.max(0, Math.round(candidate.followingCount)),
+          candidate.mediaCount == null ? null : Math.max(0, Math.round(candidate.mediaCount)),
+          candidate.isPrivate == null ? null : candidate.isPrivate ? 1 : 0,
+          candidate.lastPostAt ?? null,
+          candidate.activityScore == null ? null : Math.max(0, Math.min(100, Math.round(candidate.activityScore))),
+          candidate.italianSignal == null ? null : candidate.italianSignal ? 1 : 0,
+          candidate.femaleSelfDeclared == null ? null : candidate.femaleSelfDeclared ? 1 : 0,
           candidate.followsYou == null ? null : candidate.followsYou ? 1 : 0,
           candidate.youFollow == null ? null : candidate.youFollow ? 1 : 0,
           candidate.lastInteraction ?? null,
@@ -253,6 +287,8 @@ async function generateToday() {
   const date = todayRome();
   const settings = await readSettings();
   await env.DB.prepare(`UPDATE daily_actions SET status = 'invalid'
+    WHERE status = 'pending' AND action_type = 'comment'`).run();
+  await env.DB.prepare(`UPDATE daily_actions SET status = 'invalid'
     WHERE action_date = ? AND status = 'pending' AND action_type IN ('follow', 'follow_back')
       AND EXISTS (
         SELECT 1 FROM growth_targets t
@@ -274,20 +310,39 @@ async function generateToday() {
     (action_date, external_id, action_type, probability, reason)
     SELECT ?, t.external_id,
       CASE WHEN t.follows_you = 1 THEN 'follow_back' ELSE 'follow' END,
-      MIN(94, 32 + t.score / 2 + MIN(24, t.interactions * 5)
+      MIN(92, 24 + t.score / 2 + MIN(24, t.interactions * 5)
+        + MIN(12, COALESCE(t.activity_score, 0) / 8)
         + CASE t.source WHEN 'exchange_group' THEN 12 WHEN 'organic_interaction' THEN 10
           WHEN 'open_source_discovery' THEN 14 ELSE 3 END),
       CASE
         WHEN t.follows_you = 1 THEN 'Ti segue già: follow-back consigliato per consolidare la relazione'
+        WHEN t.interactions > 1 THEN 'Ha già messo like o commentato più volte: reciprocità osservata direttamente'
         WHEN t.source = 'exchange_group' THEN 'Segnalato da un gruppo di scambio: reciprocità più probabile, qualità da verificare'
-        WHEN t.interactions > 1 THEN 'Ha interagito più volte: segnale concreto di interesse'
-        WHEN t.source = 'open_source_discovery' THEN 'Scoperta automatica: non lo segui, non ti segue e mostra segnali di reciprocità'
+        WHEN t.source = 'open_source_discovery' AND t.female_self_declared = 1
+          THEN 'Profilo italiano attivo; identità femminile dichiarata nella bio e rapporto seguiti/follower favorevole'
+        WHEN t.source = 'open_source_discovery' THEN 'Profilo italiano attivo: rapporto seguiti/follower favorevole e post presenti'
         WHEN t.source = 'competitor_audience' THEN 'Pubblico affine: controlla il profilo prima di seguire'
         ELSE 'Target manuale da qualificare prima del follow'
       END
     FROM growth_targets t
     WHERE t.you_follow = 0
       AND t.username <> ''
+      AND (
+        t.source NOT IN ('organic_interaction', 'open_source_discovery')
+        OR COALESCE(t.italian_signal, 0) = 1
+      )
+      AND (
+        t.source <> 'open_source_discovery'
+        OR (
+          COALESCE(t.media_count, 0) >= 3
+          AND COALESCE(t.following_count, 0) >= 50
+          AND COALESCE(t.italian_signal, 0) = 1
+          AND NOT (COALESCE(t.follower_count, 0) > 10000
+            AND CAST(t.following_count AS REAL) / MAX(t.follower_count, 1) < 0.50)
+          AND NOT (COALESCE(t.follower_count, 0) > 500
+            AND CAST(t.following_count AS REAL) / MAX(t.follower_count, 1) < 0.20)
+        )
+      )
       AND NOT EXISTS (
         SELECT 1 FROM daily_actions old
         WHERE old.external_id = t.external_id
@@ -295,23 +350,12 @@ async function generateToday() {
           AND old.status = 'completed'
       )
     ORDER BY
+      (t.interactions > 0) DESC,
+      COALESCE(t.female_self_declared, 0) DESC,
       CASE t.source WHEN 'organic_interaction' THEN 4 WHEN 'open_source_discovery' THEN 3
         WHEN 'exchange_group' THEN 2 ELSE 1 END DESC,
       t.interactions DESC, t.score DESC, t.last_interaction DESC
     LIMIT ?`).bind(date, settings.follows_per_day).run();
-
-  await env.DB.prepare(`INSERT OR IGNORE INTO daily_actions
-    (action_date, external_id, action_type, probability, reason)
-    SELECT ?, t.external_id, 'comment',
-      MIN(95, 38 + t.score / 2 + MIN(30, t.interactions * 7)),
-      CASE
-        WHEN t.interactions > 2 THEN 'Commentatore ricorrente: alta probabilità di riaprire la conversazione'
-        ELSE 'Ha già interagito: commenta un contenuto recente con un riferimento specifico'
-      END
-    FROM growth_targets t
-    WHERE t.interactions > 0 AND t.username <> ''
-    ORDER BY t.interactions DESC, t.score DESC, t.last_interaction DESC
-    LIMIT ?`).bind(date, settings.comments_per_day).run();
 
   await env.DB.prepare(`INSERT OR IGNORE INTO daily_actions
     (action_date, external_id, action_type, probability, reason)
@@ -369,7 +413,8 @@ async function readPlanner() {
     env.DB.prepare(`SELECT a.id, a.action_date, a.action_type, a.probability, a.reason, a.status,
       a.created_at, a.completed_at, t.external_id, t.username, t.display_name, t.profile_url,
       t.source, t.source_detail, t.interactions, t.follows_you, t.you_follow, t.review_after,
-      t.unfollowed_you_at
+      t.unfollowed_you_at, t.follower_count, t.following_count, t.media_count, t.is_private,
+      t.last_post_at, t.activity_score, t.italian_signal, t.female_self_declared
       FROM daily_actions a JOIN growth_targets t ON t.external_id = a.external_id
       WHERE a.action_date = ? AND a.status <> 'invalid'
       ORDER BY CASE a.action_type WHEN 'follow' THEN 1 WHEN 'follow_back' THEN 1
@@ -401,7 +446,7 @@ async function readPlanner() {
       pending: rows.filter((item) => item.status === "pending").length,
       completed: rows.filter((item) => item.status === "completed").length,
       follows: rows.filter((item) => item.action_type === "follow" || item.action_type === "follow_back").length,
-      comments: rows.filter((item) => item.action_type === "comment").length,
+      comments: 0,
       unfollows: rows.filter((item) => item.action_type === "unfollow").length,
       lostFollowers: rows.filter((item) => item.action_type === "lost_follower").length,
     },
@@ -451,7 +496,7 @@ export async function POST(request: Request) {
       unfollows_per_day = ?, review_days = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1`)
       .bind(
         clamp(body.settings?.followsPerDay, current.follows_per_day, 30),
-        clamp(body.settings?.commentsPerDay, current.comments_per_day, 30),
+        0,
         clamp(body.settings?.unfollowsPerDay, current.unfollows_per_day, 30),
         clamp(body.settings?.reviewDays, current.review_days, 30),
       ).run();
