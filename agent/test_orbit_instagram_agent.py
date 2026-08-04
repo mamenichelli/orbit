@@ -72,6 +72,37 @@ class InstagramWebSessionTests(TestCase):
         self.assertEqual(config["ORBIT_DASHBOARD_URL"], "https://example.test")
         self.assertEqual(config["ORBIT_AGENT_TOKEN"], "secret")
 
+    def test_relation_cache_and_seed_rotation_are_persistent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / ".env.agent"
+            config_path.write_text("ORBIT_INSTAGRAM_USERNAME=test.account\n", encoding="utf-8")
+            orbit.save_relation_cache(
+                config_path,
+                ["follower"],
+                ["seed.one", "seed.two"],
+                {
+                    "seed.one": {"pk": "11", "username": "seed.one"},
+                    "seed.two": {"pk": "22", "username": "seed.two"},
+                },
+            )
+            cached = orbit.load_relation_cache(config_path)
+            first = orbit.next_discovery_seed(config_path, cached["automaticSeeds"])
+            second = orbit.next_discovery_seed(config_path, cached["automaticSeeds"])
+
+        self.assertEqual(cached["followers"], ["follower"])
+        self.assertEqual(first["username"], "seed.one")
+        self.assertEqual(second["username"], "seed.two")
+
+    def test_discovery_respects_saved_rate_limit_before_login(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / ".env.agent"
+            config_path.write_text("ORBIT_INSTAGRAM_USERNAME=test.account\n", encoding="utf-8")
+            orbit.record_rate_limit(config_path, 600)
+            with mock.patch.object(orbit, "login_saved") as login_saved:
+                orbit.discover(config_path)
+
+        login_saved.assert_not_called()
+
     def test_session_cookie_is_saved_without_hitting_rate_limited_endpoints(self):
         session_id = "1234567890%3A" + ("x" * 40)
         http = _HTTPSession()

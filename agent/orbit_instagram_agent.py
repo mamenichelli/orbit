@@ -65,6 +65,35 @@ def cooldown_path(config_path: Path) -> Path:
     return directory / "instagram-cooldown.json"
 
 
+def relation_cache_path(config_path: Path) -> Path:
+    directory = config_path.parent / ".orbit-agent"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / "instagram-relations-cache.json"
+
+
+def discovery_state_path(config_path: Path) -> Path:
+    directory = config_path.parent / ".orbit-agent"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / "instagram-discovery-state.json"
+
+
+def discovery_result_path(config_path: Path) -> Path:
+    directory = config_path.parent / ".orbit-agent"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / "instagram-discovery-last.json"
+
+
+def save_discovery_result(config_path: Path, status: str, **details: Any) -> None:
+    discovery_result_path(config_path).write_text(
+        json.dumps(
+            {"status": status, "recordedAt": int(time.time()), **details},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+
+
 def record_rate_limit(config_path: Path, retry_after: int) -> int:
     retry_at = int(time.time()) + max(60, int(retry_after))
     cooldown_path(config_path).write_text(
@@ -72,6 +101,16 @@ def record_rate_limit(config_path: Path, retry_after: int) -> int:
         encoding="utf-8",
     )
     return retry_at
+
+
+def cooldown_retry_at(config_path: Path) -> int:
+    path = cooldown_path(config_path)
+    if not path.exists():
+        return 0
+    try:
+        return max(0, int(json.loads(path.read_text(encoding="utf-8")).get("retry_at", 0)))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return 0
 
 
 class InstagramWebSession:
@@ -301,6 +340,60 @@ def collect_users(stream: Iterable[Any]) -> tuple[list[str], dict[str, Any]]:
     return usernames, users
 
 
+def save_relation_cache(
+    config_path: Path,
+    followers: list[str],
+    following: list[str],
+    following_users: dict[str, Any],
+) -> None:
+    automatic_seeds = []
+    for username, user in following_users.items():
+        user_id = str(field_of(user, "pk", "") or field_of(user, "id", "") or "")
+        if user_id:
+            automatic_seeds.append({"pk": user_id, "username": username})
+    relation_cache_path(config_path).write_text(
+        json.dumps(
+            {
+                "cachedAt": int(time.time()),
+                "followers": followers,
+                "following": following,
+                "automaticSeeds": automatic_seeds,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+
+
+def load_relation_cache(config_path: Path) -> dict[str, Any]:
+    path = relation_cache_path(config_path)
+    if not path.exists():
+        raise RuntimeError("Cache relazioni assente. Esegui prima il comando sync.")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload.get("followers"), list) or not isinstance(payload.get("following"), list):
+        raise RuntimeError("Cache relazioni non valida. Esegui nuovamente il comando sync.")
+    return payload
+
+
+def next_discovery_seed(config_path: Path, seeds: list[Any]) -> Any:
+    if not seeds:
+        raise RuntimeError("Nessun profilo affine disponibile per la ricerca candidati.")
+    path = discovery_state_path(config_path)
+    index = 0
+    if path.exists():
+        try:
+            index = max(0, int(json.loads(path.read_text(encoding="utf-8")).get("seedIndex", 0)))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            index = 0
+    selected = seeds[index % len(seeds)]
+    path.write_text(
+        json.dumps({"seedIndex": (index + 1) % len(seeds)}, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return selected
+
+
 def score_candidate(profile: Any) -> tuple[int, str, dict[str, Any]] | None:
     edge_followers = field_of(profile, "edge_followed_by", {}) or {}
     edge_following = field_of(profile, "edge_follow", {}) or {}
@@ -435,7 +528,7 @@ def score_candidate(profile: Any) -> tuple[int, str, dict[str, Any]] | None:
 
 def discover_candidates(
     client: Any,
-    seeds: list[str],
+    seeds: list[Any],
     own_followers: set[str],
     own_following: set[str],
     per_seed: int,
@@ -522,7 +615,7 @@ def discover_candidates(
     for username, (short_user, seed) in list(raw.items()):
         if len(candidates) >= max_candidates:
             break
-        if web_session and checked_profiles >= max(12, min(30, max_candidates * 2)):
+        if web_session and checked_profiles >= min(6, max(3, max_candidates * 2)):
             break
         try:
             user_id = str(
@@ -583,9 +676,31 @@ def setup(config_path: Path, auth_mode: str) -> None:
     print(f"Sessione locale verificata per @{client.username}.")
 
 
+def send_snapshot(
+    config: dict[str, str],
+    followers: list[str],
+    following: list[str],
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    endpoint = required(config, "ORBIT_DASHBOARD_URL").rstrip("/") + "/api/agent/instagram-sync"
+    response = requests.post(
+        endpoint,
+        headers=gateway_headers(config),
+        json={
+            "username": required(config, "ORBIT_INSTAGRAM_USERNAME"),
+            "followers": followers,
+            "following": following,
+            "candidates": candidates,
+        },
+        timeout=180,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def sync(config_path: Path) -> None:
+    """Refresh relations only; candidate discovery runs separately in small batches."""
     config = load_config(config_path)
-    username = required(config, "ORBIT_INSTAGRAM_USERNAME")
     client = login_saved(config, config_path)
     max_relations = max(0, int(config.get("ORBIT_MAX_RELATIONS", "0") or 0))
     user_id = str(getattr(client, "_orbit_user_id", None) or client.user_id)
@@ -606,58 +721,80 @@ def sync(config_path: Path) -> None:
         return
     followers_list, _ = collect_users(followers_stream)
     following_list, following_users = collect_users(following_stream)
-    followers = set(followers_list)
-    following = set(following_list)
-    seeds = [item.strip() for item in config.get("ORBIT_DISCOVERY_SEEDS", "").split(",") if item.strip()]
-    candidate_retry_pending = False
+    save_relation_cache(config_path, followers_list, following_list, following_users)
+    result = send_snapshot(config, followers_list, following_list, [])
+    print(
+        f"Sincronizzazione completata: {result['followers']} follower, "
+        f"{result['following']} seguiti. Cache locale pronta per la ricerca graduale."
+    )
+
+
+def discover(config_path: Path) -> None:
+    """Inspect one audience and a few profiles, preserving verified server candidates."""
+    retry_at = cooldown_retry_at(config_path)
+    if retry_at > int(time.time()):
+        retry_time = time.strftime("%d/%m/%Y %H:%M", time.localtime(retry_at))
+        save_discovery_result(config_path, "cooldown", retryAt=retry_at)
+        print(f"Limite Instagram ancora attivo; prossimo tentativo automatico dopo le {retry_time}.")
+        return
+
+    config = load_config(config_path)
+    client = login_saved(config, config_path)
+    cached = load_relation_cache(config_path)
+    followers_list = [str(item).lower() for item in cached.get("followers", []) if str(item).strip()]
+    following_list = [str(item).lower() for item in cached.get("following", []) if str(item).strip()]
+    configured_seeds: list[Any] = [
+        item.strip() for item in config.get("ORBIT_DISCOVERY_SEEDS", "").split(",") if item.strip()
+    ]
+    seed_pool = configured_seeds or [
+        item for item in cached.get("automaticSeeds", []) if isinstance(item, dict)
+    ]
+    selected_seed = next_discovery_seed(config_path, seed_pool)
     try:
         candidates = discover_candidates(
             client,
-            seeds,
-            followers,
-            following,
-            per_seed=max(5, min(100, int(config.get("ORBIT_USERS_PER_SEED", "40") or 40))),
-            max_candidates=max(1, min(100, int(config.get("ORBIT_MAX_CANDIDATES", "30") or 30))),
-            automatic_seeds=list(following_users.values()),
+            [selected_seed],
+            set(followers_list),
+            set(following_list),
+            per_seed=max(5, min(20, int(config.get("ORBIT_USERS_PER_SEED", "12") or 12))),
+            max_candidates=max(1, min(5, int(config.get("ORBIT_MAX_CANDIDATES", "3") or 3))),
+            automatic_seeds=[],
         )
     except InstagramRateLimited as exc:
-        record_rate_limit(config_path, exc.retry_after)
-        print("Ricerca candidati rinviata per limite Instagram; follower e seguiti saranno comunque salvati.")
-        candidates = []
-        candidate_retry_pending = True
-    endpoint = required(config, "ORBIT_DASHBOARD_URL").rstrip("/") + "/api/agent/instagram-sync"
-    response = requests.post(
-        endpoint,
-        headers=gateway_headers(config),
-        json={
-            "username": username,
-            "followers": followers_list,
-            "following": following_list,
-            "candidates": candidates,
-        },
-        timeout=180,
+        retry_at = record_rate_limit(config_path, exc.retry_after)
+        retry_time = time.strftime("%d/%m/%Y %H:%M", time.localtime(retry_at))
+        save_discovery_result(config_path, "rate_limited", retryAt=retry_at)
+        print(f"Ricerca graduale rinviata; nuovo tentativo automatico dopo le {retry_time}.")
+        return
+
+    result = send_snapshot(config, followers_list, following_list, candidates)
+    cooldown_path(config_path).unlink(missing_ok=True)
+    save_discovery_result(
+        config_path,
+        "completed",
+        candidatesFound=len(candidates),
+        candidatesAccepted=int(result.get("candidates", 0) or 0),
+        seed=username_of(selected_seed) if not isinstance(selected_seed, str) else selected_seed,
     )
-    response.raise_for_status()
-    result = response.json()
-    if not candidate_retry_pending:
-        cooldown_path(config_path).unlink(missing_ok=True)
     print(
-        f"Sincronizzazione completata: {result['followers']} follower, "
-        f"{result['following']} seguiti, {result['candidates']} candidati."
+        f"Ricerca graduale completata: {result['candidates']} nuove candidate verificate. "
+        "Le candidate gia salvate restano disponibili."
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Agente Instagram read-only per Orbit")
-    parser.add_argument("command", choices=("setup", "sync"))
+    parser.add_argument("command", choices=("setup", "sync", "discover"))
     parser.add_argument("--config", default=".env.agent")
     parser.add_argument("--auth-mode", choices=("session", "browser", "password"), default="session")
     args = parser.parse_args()
     config_path = Path(args.config).resolve()
     if args.command == "setup":
         setup(config_path, args.auth_mode)
-    else:
+    elif args.command == "sync":
         sync(config_path)
+    else:
+        discover(config_path)
 
 
 if __name__ == "__main__":

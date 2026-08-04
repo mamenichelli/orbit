@@ -27,15 +27,21 @@ Lo script:
 2. salva una sessione Instagram sul PC;
 3. scarica follower e seguiti;
 4. esclude follower attuali e persone già seguite;
-5. analizza follower recenti dei profili seed e apre i profili per verificarne attività e rapporto seguiti/follower;
+5. salva localmente le relazioni e analizza un solo pubblico affine alla volta, aprendo pochi profili per non superare i limiti Instagram;
 6. mantiene solo donne con segnali pubblici italiani e identità femminile dichiarata nella bio, scartando account vuoti, inattivi o sproporzionati;
 7. invia alla dashboard la lista ordinata;
-8. registra l'attività pianificata `Orbit Instagram Sync` ogni 6 ore.
+8. registra `Orbit Instagram Sync` ogni 6 ore e `Orbit Instagram Discovery` ogni 30 minuti; se Instagram limita le richieste, riparte automaticamente all'orario indicato senza cancellare le candidate già verificate.
 
 Per forzare una sincronizzazione:
 
 ```powershell
 .\.venv-agent\Scripts\python.exe .\agent\orbit_instagram_agent.py sync --config .\.env.agent
+```
+
+Per forzare soltanto un piccolo lotto di ricerca, senza riscaricare tutte le relazioni:
+
+```powershell
+.\.venv-agent\Scripts\python.exe .\agent\orbit_instagram_agent.py discover --config .\.env.agent
 ```
 
 Per un account con password Instagram autonoma puoi usare `-AuthMode password`.
