@@ -1,4 +1,3 @@
-from types import SimpleNamespace
 from unittest import TestCase, mock
 
 from agent import orbit_instagram_agent as orbit
@@ -12,62 +11,77 @@ class _Cookies:
         self.values[name] = value
 
 
-class _Session:
+class _Response:
+    def __init__(self, payload, url, status_code=200, text=""):
+        self.payload = payload
+        self.url = url
+        self.status_code = status_code
+        self.text = text
+        self.headers = {}
+
+    def json(self):
+        return self.payload
+
+
+class _HTTPSession:
     def __init__(self):
         self.cookies = _Cookies()
-        self.headers = {"Authorization": "mobile-header"}
+        self.headers = {}
+        self.calls = []
 
-
-class _WebClient:
-    def __init__(self):
-        self.settings = {}
-        self.private = _Session()
-        self.public = _Session()
-        self.authorization_data = {"old": "value"}
-        self.username = None
-
-    def init(self):
-        for name, value in self.settings.get("cookies", {}).items():
-            self.private.cookies.set(name, value)
-
-    def user_short_gql(self, user_id, use_cache=True):
-        assert use_cache is False
-        assert user_id == "1234567890"
-        return SimpleNamespace(pk=user_id, username="test.account")
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        if "web_profile_info" in url:
+            payload = {
+                "data": {
+                    "user": {
+                        "id": "1234567890",
+                        "username": "test.account",
+                    }
+                }
+            }
+        else:
+            payload = {"users": [], "next_max_id": None, "status": "ok"}
+        return _Response(payload, url)
 
 
 class InstagramWebSessionTests(TestCase):
-    def test_session_cookie_never_calls_mobile_login(self):
+    def test_session_cookie_uses_only_www_web_json_endpoints(self):
         session_id = "1234567890%3A" + ("x" * 40)
-        with mock.patch.object(orbit, "Client", _WebClient):
+        http = _HTTPSession()
+        with mock.patch.object(orbit.requests, "Session", return_value=http):
             client = orbit.web_client_from_session_id(session_id, "test.account")
 
         self.assertEqual(client._orbit_auth_mode, "web")
         self.assertEqual(client._orbit_user_id, "1234567890")
-        self.assertEqual(client.authorization_data, {})
-        self.assertNotIn("Authorization", client.private.headers)
-        self.assertEqual(client.public.cookies.values["sessionid"], session_id)
+        self.assertEqual(http.cookies.values["sessionid"], session_id)
+        called_urls = [url for url, _kwargs in http.calls]
+        self.assertTrue(any("web_profile_info" in url for url in called_urls))
+        self.assertTrue(any("friendships/1234567890/followers" in url for url in called_urls))
+        self.assertFalse(any("graphql" in url or "i.instagram.com" in url for url in called_urls))
 
     def test_web_discovery_uses_second_degree_profiles(self):
-        candidate = SimpleNamespace(pk="99", username="candidate")
-        profile = SimpleNamespace(
-            pk="99",
-            username="candidate",
-            full_name="Candidate",
-            follower_count=500,
-            following_count=600,
-            media_count=20,
-            is_private=False,
-            is_verified=False,
-        )
-        client = SimpleNamespace(
-            _orbit_auth_mode="web",
-            _orbit_user_id="1234567890",
-            user_id="1234567890",
-            user_info_by_username_v2_gql=mock.Mock(return_value=SimpleNamespace(pk="55")),
-            user_followers_gql=mock.Mock(return_value=[candidate]),
-            user_info_v2_gql=mock.Mock(return_value=profile),
-        )
+        candidate = {"pk": "99", "username": "candidate"}
+        profile = {
+            "id": "99",
+            "username": "candidate",
+            "full_name": "Candidate",
+            "follower_count": 500,
+            "following_count": 600,
+            "media_count": 20,
+            "is_private": False,
+            "is_verified": False,
+        }
+
+        def profile_by_username(username):
+            return {"id": "55", "username": "affine"} if username == "affine" else profile
+
+        client = mock.Mock()
+        client._orbit_auth_mode = "web"
+        client._orbit_user_id = "1234567890"
+        client.user_id = "1234567890"
+        client.profile_by_username.side_effect = profile_by_username
+        client.relation_users.return_value = [candidate]
 
         with mock.patch.object(orbit.time, "sleep"):
             result = orbit.discover_candidates(
@@ -81,5 +95,5 @@ class InstagramWebSessionTests(TestCase):
             )
 
         self.assertEqual([item["username"] for item in result], ["candidate"])
-        client.user_followers_gql.assert_called_once_with("55", amount=40)
-        client.user_info_v2_gql.assert_called_once_with("99")
+        client.relation_users.assert_called_once_with("55", "followers", amount=40)
+        client.profile_by_username.assert_any_call("candidate")

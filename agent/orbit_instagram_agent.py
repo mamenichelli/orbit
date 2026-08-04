@@ -16,6 +16,7 @@ from instagrapi.exceptions import LoginRequired, TwoFactorRequired
 
 
 KEYRING_SERVICE = "Orbit Social Growth - Instagram"
+INSTAGRAM_WEB_APP_ID = "936619743392459"
 
 
 def load_config(path: Path) -> dict[str, str]:
@@ -44,6 +45,109 @@ def session_path(config_path: Path) -> Path:
     return directory / "instagram-session.json"
 
 
+class InstagramWebSession:
+    """Small cookie-based client for Instagram's web JSON endpoints."""
+
+    _orbit_auth_mode = "web"
+
+    def __init__(self, session_id: str, expected_username: str, user_id: str):
+        self.username = expected_username.strip().lstrip("@").lower()
+        self.user_id = str(user_id)
+        self._orbit_user_id = self.user_id
+        self.http = requests.Session()
+        self.http.headers.update(
+            {
+                "Accept": "*/*",
+                "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/136.0.0.0 Safari/537.36"
+                ),
+                "X-ASBD-ID": "129477",
+                "X-IG-App-ID": INSTAGRAM_WEB_APP_ID,
+                "X-Requested-With": "XMLHttpRequest",
+            }
+        )
+        self.http.cookies.set("sessionid", session_id, domain=".instagram.com")
+        self.http.cookies.set("ds_user_id", self.user_id, domain=".instagram.com")
+
+    def _json_get(self, path: str, params: dict[str, Any], referer: str) -> dict[str, Any]:
+        url = "https://www.instagram.com" + path
+        response = self.http.get(
+            url,
+            params=params,
+            headers={"Referer": referer},
+            timeout=60,
+            allow_redirects=False,
+        )
+        if 300 <= response.status_code < 400:
+            location = response.headers.get("Location", "")
+            raise RuntimeError(
+                f"Instagram ha reindirizzato la sessione ({response.status_code}, {location or 'login'}). "
+                "Copia un nuovo cookie sessionid da una scheda Instagram ancora autenticata."
+            )
+        try:
+            payload = response.json()
+        except requests.exceptions.JSONDecodeError as exc:
+            title_match = re.search(r"<title[^>]*>(.*?)</title>", response.text, re.I | re.S)
+            title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else "pagina HTML"
+            raise RuntimeError(
+                f"Instagram Web ha restituito {title!r} invece dei dati JSON "
+                f"(HTTP {response.status_code}, endpoint {path})."
+            ) from exc
+        if response.status_code >= 400:
+            message = payload.get("message") or payload.get("error_title") or "richiesta rifiutata"
+            raise RuntimeError(f"Instagram Web: {message} (HTTP {response.status_code})")
+        if payload.get("status") == "fail" or payload.get("message") == "login_required":
+            raise RuntimeError(
+                "Instagram richiede un nuovo accesso web. Copia nuovamente il cookie sessionid."
+            )
+        return payload
+
+    def profile_by_username(self, username: str) -> dict[str, Any]:
+        normalized = username.strip().lstrip("@").lower()
+        payload = self._json_get(
+            "/api/v1/users/web_profile_info/",
+            {"username": normalized},
+            f"https://www.instagram.com/{normalized}/",
+        )
+        user = (payload.get("data") or {}).get("user") or payload.get("user")
+        if not isinstance(user, dict):
+            raise RuntimeError(f"Profilo Instagram @{normalized} non trovato")
+        return user
+
+    def relation_users(self, user_id: str, relation: str, amount: int = 0) -> list[dict[str, Any]]:
+        if relation not in {"followers", "following"}:
+            raise ValueError("Relazione Instagram non valida")
+        users: list[dict[str, Any]] = []
+        max_id = ""
+        seen_cursors: set[str] = set()
+        while True:
+            remaining = amount - len(users) if amount else 100
+            params: dict[str, Any] = {
+                "count": max(1, min(100, remaining)),
+                "search_surface": "follow_list_page",
+                "query": "",
+                "enable_groups": "true",
+            }
+            if max_id:
+                params["max_id"] = max_id
+            payload = self._json_get(
+                f"/api/v1/friendships/{user_id}/{relation}/",
+                params,
+                f"https://www.instagram.com/{self.username}/{relation}/",
+            )
+            page_users = payload.get("users") or []
+            users.extend(item for item in page_users if isinstance(item, dict))
+            max_id = str(payload.get("next_max_id") or "")
+            if not max_id or max_id in seen_cursors or (amount and len(users) >= amount):
+                break
+            seen_cursors.add(max_id)
+            time.sleep(random.uniform(1.0, 2.0))
+        return users[:amount] if amount else users
+
+
 def login_for_setup(username: str, password: str, settings_file: Path) -> Client:
     client = Client()
     try:
@@ -57,46 +161,32 @@ def login_for_setup(username: str, password: str, settings_file: Path) -> Client
     return client
 
 
-def web_client_from_session_id(session_id: str, expected_username: str) -> Client:
-    """Create a read-only Instagram Web session without using the mobile API."""
+def web_client_from_session_id(session_id: str, expected_username: str) -> InstagramWebSession:
+    """Create and validate a read-only Instagram Web session."""
     user_match = re.match(r"^\d+", session_id)
     if not user_match or len(session_id) <= 30:
         raise RuntimeError("Session ID non valido")
 
     user_id = user_match.group(0)
-    client = Client()
-    client.settings["cookies"] = {
-        "sessionid": session_id,
-        "ds_user_id": user_id,
-    }
-    client.init()
-    # Keep browser sessions cookie-based. A mobile Authorization header is what
-    # makes Instagram reject this otherwise valid web session with HTTP 403.
-    client.authorization_data = {}
-    client.private.headers.pop("Authorization", None)
-    client.public.cookies.set("sessionid", session_id)
-    client.public.cookies.set("ds_user_id", user_id)
-
-    try:
-        profile = client.user_short_gql(user_id, use_cache=False)
-    except Exception as exc:
+    client = InstagramWebSession(session_id, expected_username, user_id)
+    profile = client.profile_by_username(expected_username)
+    profile_id = str(profile.get("id") or profile.get("pk") or "")
+    logged_username = str(profile.get("username") or "").lower()
+    if profile_id and profile_id != user_id:
         raise RuntimeError(
-            "Instagram non accetta piu questa sessione web. Esci e rientra su "
-            "instagram.com nel browser, poi copia il nuovo cookie sessionid."
-        ) from exc
-
-    logged_username = str(profile.username or "").lower()
+            f"Il cookie appartiene all'account {user_id}, ma @{expected_username} ha ID {profile_id}"
+        )
     if logged_username != expected_username.lower():
         raise RuntimeError(
             f"La sessione appartiene a @{logged_username}, Orbit attende @{expected_username}"
         )
-    client.username = logged_username
-    client._orbit_auth_mode = "web"  # type: ignore[attr-defined]
-    client._orbit_user_id = user_id  # type: ignore[attr-defined]
+    # This authenticated relation request proves that the cookie is accepted;
+    # the public profile endpoint alone would not be sufficient validation.
+    client.relation_users(user_id, "followers", amount=1)
     return client
 
 
-def login_with_browser(username: str, config_path: Path) -> Client:
+def login_with_browser(username: str, config_path: Path) -> InstagramWebSession:
     """Use Edge only to obtain a normal web cookie, then stay on the web API."""
     from playwright.sync_api import sync_playwright
 
@@ -131,7 +221,7 @@ def login_with_browser(username: str, config_path: Path) -> Client:
     return client
 
 
-def login_with_session_id(username: str, config_path: Path) -> Client:
+def login_with_session_id(username: str, config_path: Path) -> InstagramWebSession:
     session_id = getpass.getpass("Session ID Instagram (input nascosto, resta sul PC): ").strip()
     if not session_id:
         raise RuntimeError("Session ID non inserito")
@@ -140,7 +230,7 @@ def login_with_session_id(username: str, config_path: Path) -> Client:
     return client
 
 
-def login_saved(config: dict[str, str], config_path: Path) -> Client:
+def login_saved(config: dict[str, str], config_path: Path) -> Any:
     username = required(config, "ORBIT_INSTAGRAM_USERNAME")
     saved_session_id = keyring.get_password(KEYRING_SERVICE, f"{username}:sessionid")
     password = keyring.get_password(KEYRING_SERVICE, username)
@@ -190,9 +280,21 @@ def collect_users(stream: Iterable[Any]) -> tuple[list[str], dict[str, Any]]:
 
 
 def score_candidate(profile: Any) -> tuple[int, str]:
-    followers = max(0, int(getattr(profile, "follower_count", 0) or 0))
-    following = max(0, int(getattr(profile, "following_count", 0) or 0))
-    media_count = max(0, int(getattr(profile, "media_count", 0) or 0))
+    edge_followers = field_of(profile, "edge_followed_by", {}) or {}
+    edge_following = field_of(profile, "edge_follow", {}) or {}
+    edge_media = field_of(profile, "edge_owner_to_timeline_media", {}) or {}
+    followers = max(
+        0,
+        int(field_of(profile, "follower_count", 0) or field_of(edge_followers, "count", 0) or 0),
+    )
+    following = max(
+        0,
+        int(field_of(profile, "following_count", 0) or field_of(edge_following, "count", 0) or 0),
+    )
+    media_count = max(
+        0,
+        int(field_of(profile, "media_count", 0) or field_of(edge_media, "count", 0) or 0),
+    )
     ratio = following / max(followers, 1)
     score = 42 + min(28, round(ratio * 14))
     if 80 <= followers <= 5_000:
@@ -201,9 +303,9 @@ def score_candidate(profile: Any) -> tuple[int, str]:
         score -= 10
     if media_count >= 9:
         score += 7
-    if not bool(getattr(profile, "is_private", False)):
+    if not bool(field_of(profile, "is_private", False)):
         score += 5
-    if bool(getattr(profile, "is_verified", False)):
+    if bool(field_of(profile, "is_verified", False)):
         score -= 7
     score = max(35, min(92, score))
     reason = f"attivo, rapporto seguiti/follower {ratio:.2f}, {followers} follower"
@@ -211,7 +313,7 @@ def score_candidate(profile: Any) -> tuple[int, str]:
 
 
 def discover_candidates(
-    client: Client,
+    client: Any,
     seeds: list[str],
     own_followers: set[str],
     own_following: set[str],
@@ -257,9 +359,11 @@ def discover_candidates(
             continue
         try:
             if web_session:
-                seed_profile = client.user_info_by_username_v2_gql(seed)
-                seed_id = str(seed_profile.pk)
-                stream = client.user_followers_gql(seed_id, amount=per_seed)
+                seed_profile = client.profile_by_username(seed)
+                seed_id = str(seed_profile.get("id") or seed_profile.get("pk") or "")
+                if not seed_id:
+                    raise RuntimeError("ID seed non disponibile")
+                stream = client.relation_users(seed_id, "followers", amount=per_seed)
             else:
                 seed_id = client.user_id_from_username(seed)
                 stream = client.iter_user_followers_v1(
@@ -291,12 +395,12 @@ def discover_candidates(
                 or field_of(short_user, "id", "")
                 or client.user_id_from_username(username)
             )
-            profile = client.user_info_v2_gql(user_id) if web_session else client.user_info(user_id)
+            profile = client.profile_by_username(username) if web_session else client.user_info(user_id)
             score, signal = score_candidate(profile)
             candidates.append({
                 "externalId": f"ig:{user_id}",
                 "username": username,
-                "displayName": str(getattr(profile, "full_name", "") or username),
+                "displayName": str(field_of(profile, "full_name", "") or username),
                 "sourceDetail": f"origine {seed}; {signal}",
                 "reason": signal,
                 "score": score,
@@ -333,8 +437,8 @@ def sync(config_path: Path) -> None:
     max_relations = max(0, int(config.get("ORBIT_MAX_RELATIONS", "0") or 0))
     user_id = str(getattr(client, "_orbit_user_id", None) or client.user_id)
     if getattr(client, "_orbit_auth_mode", "mobile") == "web":
-        followers_stream = client.user_followers_gql(user_id, amount=max_relations)
-        following_stream = client.user_following_gql(user_id, amount=max_relations)
+        followers_stream = client.relation_users(user_id, "followers", amount=max_relations)
+        following_stream = client.relation_users(user_id, "following", amount=max_relations)
     else:
         followers_stream = client.iter_user_followers_v1(user_id, amount=max_relations, page_size=200)
         following_stream = client.iter_user_following_v1(user_id, amount=max_relations, page_size=200)
