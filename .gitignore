@@ -43,3 +43,7 @@ next-env.d.ts
 /outputs/
 /work/
 /meta-webhook-gateway/
+/.venv-agent/
+/.orbit-agent/
+__pycache__/
+*.pyc

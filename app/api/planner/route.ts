@@ -275,11 +275,13 @@ async function generateToday() {
     SELECT ?, t.external_id,
       CASE WHEN t.follows_you = 1 THEN 'follow_back' ELSE 'follow' END,
       MIN(94, 32 + t.score / 2 + MIN(24, t.interactions * 5)
-        + CASE t.source WHEN 'exchange_group' THEN 12 WHEN 'organic_interaction' THEN 10 ELSE 3 END),
+        + CASE t.source WHEN 'exchange_group' THEN 12 WHEN 'organic_interaction' THEN 10
+          WHEN 'open_source_discovery' THEN 14 ELSE 3 END),
       CASE
         WHEN t.follows_you = 1 THEN 'Ti segue già: follow-back consigliato per consolidare la relazione'
         WHEN t.source = 'exchange_group' THEN 'Segnalato da un gruppo di scambio: reciprocità più probabile, qualità da verificare'
         WHEN t.interactions > 1 THEN 'Ha interagito più volte: segnale concreto di interesse'
+        WHEN t.source = 'open_source_discovery' THEN 'Scoperta automatica: non lo segui, non ti segue e mostra segnali di reciprocità'
         WHEN t.source = 'competitor_audience' THEN 'Pubblico affine: controlla il profilo prima di seguire'
         ELSE 'Target manuale da qualificare prima del follow'
       END
@@ -293,7 +295,8 @@ async function generateToday() {
           AND old.status = 'completed'
       )
     ORDER BY
-      CASE t.source WHEN 'organic_interaction' THEN 3 WHEN 'exchange_group' THEN 2 ELSE 1 END DESC,
+      CASE t.source WHEN 'organic_interaction' THEN 4 WHEN 'open_source_discovery' THEN 3
+        WHEN 'exchange_group' THEN 2 ELSE 1 END DESC,
       t.interactions DESC, t.score DESC, t.last_interaction DESC
     LIMIT ?`).bind(date, settings.follows_per_day).run();
 
@@ -362,7 +365,7 @@ async function completeAction(id: number) {
 
 async function readPlanner() {
   const date = todayRome();
-  const [actions, settings, totals, lastImport] = await Promise.all([
+  const [actions, settings, totals, lastImport, agentStatus] = await Promise.all([
     env.DB.prepare(`SELECT a.id, a.action_date, a.action_type, a.probability, a.reason, a.status,
       a.created_at, a.completed_at, t.external_id, t.username, t.display_name, t.profile_url,
       t.source, t.source_detail, t.interactions, t.follows_you, t.you_follow, t.review_after,
@@ -383,6 +386,8 @@ async function readPlanner() {
       FROM growth_targets`).first(),
     env.DB.prepare(`SELECT followers_count, following_count, imported_at
       FROM relation_imports ORDER BY imported_at DESC LIMIT 1`).first(),
+    env.DB.prepare(`SELECT created_at, payload FROM audit_events
+      WHERE event_type = 'open_source_instagram_sync' ORDER BY created_at DESC LIMIT 1`).first(),
   ]);
   const rows = actions.results ?? [];
   return {
@@ -391,6 +396,7 @@ async function readPlanner() {
     settings,
     totals,
     lastImport,
+    agentStatus,
     summary: {
       pending: rows.filter((item) => item.status === "pending").length,
       completed: rows.filter((item) => item.status === "completed").length,

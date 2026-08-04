@@ -129,6 +129,7 @@ type PlannerState = {
   totals: { targets?: number; followers?: number; following?: number; non_followers?: number; lost_followers?: number; exchange_targets?: number };
   summary: { pending: number; completed: number; follows: number; comments: number; unfollows: number; lostFollowers: number };
   lastImport?: { followers_count: number; following_count: number; imported_at: string } | null;
+  agentStatus?: { created_at: string; payload: string } | null;
   importResult?: { followers: number; following: number; compared: number } | null;
 };
 
@@ -664,9 +665,18 @@ export default function Home() {
                 <div className="protected-row" key={profile.external_id}><span className="avatar mini">{initials(profile.display_name)}</span><div><strong>{profile.display_name}</strong><small>{profile.platform} · dal {formatDate(profile.created_at)}</small></div><button className="text-button" onClick={() => void persist("unprotect", { external_id: profile.external_id, display_name: profile.display_name, platform: profile.platform, action_type: "", status: "", created_at: profile.created_at })}>Rimuovi</button></div>
               ))}
             </article>
+            <article className="panel agent-panel">
+              <p className="eyebrow">AGENTE OPEN SOURCE</p><h2>Sincronizzazione automatica</h2>
+              <p className="muted">Il connettore locale gratuito scarica follower e seguiti, elimina chi già segui e prepara candidati da audience affini ogni 6 ore.</p>
+              <div className={planner.agentStatus ? "agent-state active" : "agent-state"}>
+                <span>{planner.agentStatus ? "● ATTIVO" : "○ DA ATTIVARE"}</span>
+                <strong>{planner.agentStatus ? `Ultimo invio ${formatDate(planner.agentStatus.created_at)}` : "Esegui una volta agent/setup.ps1 sul PC"}</strong>
+              </div>
+              <small className="agent-note">Password e sessione restano nel Gestore credenziali Windows; Orbit riceve soltanto dati di relazione e punteggi.</small>
+            </article>
             <article className="panel import-panel">
-              <p className="eyebrow">CONFRONTO COMPLETO</p><h2>Importa Follower e Seguiti</h2>
-              <p className="muted">Usa i file JSON, CSV o TXT scaricati da Instagram. Il confronto individua chi segui ma non ti segue.</p>
+              <p className="eyebrow">FALLBACK MANUALE</p><h2>Importa Follower e Seguiti</h2>
+              <p className="muted">Usa questi file solo se l’agente locale richiede una nuova verifica Instagram.</p>
               {planner.lastImport && <p className="last-import">Ultimo confronto: {formatDate(planner.lastImport.imported_at)} · {formatNumber(planner.lastImport.followers_count)} follower · {formatNumber(planner.lastImport.following_count)} seguiti</p>}
               <div className="file-import-grid">
                 <label className={importFollowers ? "file-box ready" : "file-box"}>
