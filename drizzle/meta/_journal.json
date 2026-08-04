@@ -22,6 +22,13 @@
       "when": 1785834524415,
       "tag": "0002_curvy_banshee",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1785837715065,
+      "tag": "0003_orange_sumo",
+      "breakpoints": true
     }
   ]
 }
