@@ -79,7 +79,12 @@ def login_saved(config: dict[str, str], config_path: Path) -> Client:
 
 
 def username_of(user: Any) -> str:
-    return str(getattr(user, "username", "") or "").strip().lower()
+    value = user.get("username", "") if isinstance(user, dict) else getattr(user, "username", "")
+    return str(value or "").strip().lower()
+
+
+def field_of(user: Any, name: str, default: Any = None) -> Any:
+    return user.get(name, default) if isinstance(user, dict) else getattr(user, name, default)
 
 
 def collect_users(stream: Iterable[Any]) -> tuple[list[str], dict[str, Any]]:
@@ -124,6 +129,20 @@ def discover_candidates(
     max_candidates: int,
 ) -> list[dict[str, Any]]:
     raw: dict[str, tuple[Any, str]] = {}
+    try:
+        suggested_payloads = [
+            client.user_suggested_profiles(str(client.user_id)),
+            client.discover_recommended_accounts_for_category_v1(str(client.user_id)),
+        ]
+        for payload in suggested_payloads:
+            for item in payload.get("users", []) or payload.get("items", []):
+                user = item.get("user", item) if isinstance(item, dict) else item
+                username = username_of(user)
+                if username and username not in own_followers and username not in own_following:
+                    raw.setdefault(username, (user, "suggerimenti Instagram"))
+    except Exception as exc:
+        print(f"Suggerimenti Instagram non disponibili: {type(exc).__name__}")
+
     for seed in seeds:
         if len(raw) >= max_candidates * 3:
             break
@@ -153,14 +172,14 @@ def discover_candidates(
         if len(candidates) >= max_candidates:
             break
         try:
-            user_id = str(getattr(short_user, "pk", "") or client.user_id_from_username(username))
+            user_id = str(field_of(short_user, "pk", "") or field_of(short_user, "id", "") or client.user_id_from_username(username))
             profile = client.user_info(user_id)
             score, signal = score_candidate(profile)
             candidates.append({
                 "externalId": f"ig:{user_id}",
                 "username": username,
                 "displayName": str(getattr(profile, "full_name", "") or username),
-                "sourceDetail": f"follower recente di @{seed}; {signal}",
+                "sourceDetail": f"origine {seed}; {signal}",
                 "reason": signal,
                 "score": score,
             })

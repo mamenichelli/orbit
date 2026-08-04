@@ -8,9 +8,11 @@ La password non viene inviata alla dashboard: Windows la conserva nel proprio Ge
 Apri PowerShell nella cartella del progetto ed esegui:
 
 ```powershell
-.\agent\setup.ps1 -Username TUO_USERNAME -Seeds "profilo_affine_1,profilo_affine_2"
+.\agent\setup.ps1 -Username TUO_USERNAME
 ```
 
+Puoi aggiungere profili affini con `-Seeds "profilo1,profilo2"`; se li ometti,
+l’agente usa automaticamente i suggerimenti e la categoria del tuo profilo Instagram.
 Inserisci la password e l'eventuale codice 2FA quando richiesti. Lo script:
 
 1. crea un ambiente Python locale;
