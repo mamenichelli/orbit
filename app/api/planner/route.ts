@@ -296,11 +296,11 @@ async function generateToday() {
           AND (
             t.you_follow IS NOT 0
             OR (
-              t.source IN ('organic_interaction', 'open_source_discovery')
+              (t.source = 'organic_interaction' OR t.source LIKE 'open_source_%')
               AND COALESCE(t.italian_signal, 0) <> 1
             )
             OR (
-              t.source = 'open_source_discovery'
+              t.source LIKE 'open_source_%'
               AND COALESCE(t.female_self_declared, 0) <> 1
             )
           )
@@ -333,11 +333,11 @@ async function generateToday() {
     WHERE t.you_follow = 0
       AND t.username <> ''
       AND (
-        t.source NOT IN ('organic_interaction', 'open_source_discovery')
+        (t.source <> 'organic_interaction' AND t.source NOT LIKE 'open_source_%')
         OR COALESCE(t.italian_signal, 0) = 1
       )
       AND (
-        t.source <> 'open_source_discovery'
+        t.source NOT LIKE 'open_source_%'
         OR (
           COALESCE(t.media_count, 0) >= 3
           AND COALESCE(t.following_count, 0) >= 50
@@ -462,7 +462,7 @@ async function readPlanner() {
 export async function GET() {
   await ensureSchema();
   await generateToday();
-  return Response.json(await readPlanner(), { headers: { "cache-control": "no-store" } });
+  return Response.json(await readPlanner(), { headers: { "cache-control": "no-store, no-cache, must-revalidate" } });
 }
 
 export async function POST(request: Request) {
@@ -511,5 +511,7 @@ export async function POST(request: Request) {
   }
 
   await generateToday();
-  return Response.json({ ok: true, importResult, ...(await readPlanner()) });
+  return Response.json({ ok: true, importResult, ...(await readPlanner()) }, {
+    headers: { "cache-control": "no-store, no-cache, must-revalidate" },
+  });
 }
