@@ -102,6 +102,26 @@ def login_with_browser(username: str, config_path: Path) -> Client:
     return client
 
 
+def login_with_session_id(username: str, config_path: Path) -> Client:
+    session_id = getpass.getpass("Session ID Instagram (input nascosto, resta sul PC): ").strip()
+    if not session_id:
+        raise RuntimeError("Session ID non inserito")
+    client = Client()
+    settings_file = session_path(config_path)
+    if settings_file.exists():
+        settings = client.load_settings(settings_file)
+        if settings:
+            client.set_settings(settings)
+    client.login_by_sessionid(session_id)
+    client.get_timeline_feed()
+    logged_username = str(client.username or "").lower()
+    if logged_username and logged_username != username.lower():
+        raise RuntimeError(f"La sessione appartiene a @{logged_username}, Orbit attende @{username}")
+    client.dump_settings(settings_file)
+    keyring.set_password(KEYRING_SERVICE, f"{username}:sessionid", session_id)
+    return client
+
+
 def login_saved(config: dict[str, str], config_path: Path) -> Client:
     username = required(config, "ORBIT_INSTAGRAM_USERNAME")
     saved_session_id = keyring.get_password(KEYRING_SERVICE, f"{username}:sessionid")
@@ -242,6 +262,10 @@ def discover_candidates(
 def setup(config_path: Path, auth_mode: str) -> None:
     config = load_config(config_path)
     username = required(config, "ORBIT_INSTAGRAM_USERNAME")
+    if auth_mode == "session":
+        client = login_with_session_id(username, config_path)
+        print(f"Sessione locale verificata per @{client.username}.")
+        return
     if auth_mode == "browser":
         client = login_with_browser(username, config_path)
         print(f"Sessione browser verificata per @{client.username}.")
@@ -300,7 +324,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Agente Instagram read-only per Orbit")
     parser.add_argument("command", choices=("setup", "sync"))
     parser.add_argument("--config", default=".env.agent")
-    parser.add_argument("--auth-mode", choices=("browser", "password"), default="browser")
+    parser.add_argument("--auth-mode", choices=("session", "browser", "password"), default="session")
     args = parser.parse_args()
     config_path = Path(args.config).resolve()
     if args.command == "setup":

@@ -3,8 +3,8 @@ param(
   [string]$Username,
   [string]$Seeds = "",
   [int]$EveryHours = 6,
-  [ValidateSet("browser", "password")]
-  [string]$AuthMode = "browser"
+  [ValidateSet("session", "browser", "password")]
+  [string]$AuthMode = "session"
 )
 
 $ErrorActionPreference = "Stop"
