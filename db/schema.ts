@@ -36,6 +36,25 @@ export const relationshipCandidates = sqliteTable("relationship_candidates", {
   lastSeenAt: text("last_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const followerEvents = sqliteTable("follower_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  externalId: text("external_id").notNull(),
+  username: text("username").notNull(),
+  eventType: text("event_type").notNull(),
+  batchId: text("batch_id").notNull(),
+  detectedAt: text("detected_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("follower_events_target_type_batch_idx").on(table.externalId, table.eventType, table.batchId),
+]);
+
+export const relationImports = sqliteTable("relation_imports", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  batchId: text("batch_id").notNull().unique(),
+  followersCount: integer("followers_count").notNull(),
+  followingCount: integer("following_count").notNull(),
+  importedAt: text("imported_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
 export const reviewState = sqliteTable("review_state", {
   id: integer("id").primaryKey(),
   lastRun: text("last_run"),
@@ -54,6 +73,9 @@ export const growthTargets = sqliteTable("growth_targets", {
   score: integer("score").notNull().default(0),
   followsYou: integer("follows_you", { mode: "boolean" }),
   youFollow: integer("you_follow", { mode: "boolean" }),
+  previousFollowsYou: integer("previous_follows_you", { mode: "boolean" }),
+  relationBatch: text("relation_batch"),
+  unfollowedYouAt: text("unfollowed_you_at"),
   firstSeenAt: text("first_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   lastInteraction: text("last_interaction"),
   followedAt: text("followed_at"),

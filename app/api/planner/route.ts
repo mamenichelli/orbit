@@ -57,6 +57,9 @@ async function ensureSchema() {
       score INTEGER NOT NULL DEFAULT 0,
       follows_you INTEGER,
       you_follow INTEGER,
+      previous_follows_you INTEGER,
+      relation_batch TEXT,
+      unfollowed_you_at TEXT,
       first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       last_interaction TEXT,
       followed_at TEXT,
@@ -64,6 +67,22 @@ async function ensureSchema() {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
     env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS growth_targets_username_idx ON growth_targets(username)"),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS follower_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      external_id TEXT NOT NULL,
+      username TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      batch_id TEXT NOT NULL,
+      detected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(external_id, event_type, batch_id)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS relation_imports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id TEXT NOT NULL UNIQUE,
+      followers_count INTEGER NOT NULL,
+      following_count INTEGER NOT NULL,
+      imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS daily_actions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       action_date TEXT NOT NULL,
@@ -138,7 +157,8 @@ async function syncCandidates(candidates: CandidateInput[]) {
 async function importRelations(followers: string[], following: string[]) {
   const followerSet = new Set(followers.map(cleanUsername).filter(Boolean));
   const followingSet = new Set(following.map(cleanUsername).filter(Boolean));
-  const usernames = [...new Set([...followerSet, ...followingSet])].slice(0, 15_000);
+  const usernames = [...new Set([...followerSet, ...followingSet])];
+  const batchId = crypto.randomUUID();
   for (let offset = 0; offset < usernames.length; offset += 40) {
     const statements = usernames.slice(offset, offset + 40).map((username) => {
       const followsYou = followerSet.has(username) ? 1 : 0;
@@ -146,11 +166,18 @@ async function importRelations(followers: string[], following: string[]) {
       const reviewAfter = youFollow && !followsYou ? new Date().toISOString() : null;
       return env.DB.prepare(`INSERT INTO growth_targets
         (external_id, username, display_name, platform, profile_url, source, interactions, score,
-         follows_you, you_follow, review_after, updated_at)
-        VALUES (?, ?, ?, 'Instagram', ?, 'instagram_export', 0, 35, ?, ?, ?, CURRENT_TIMESTAMP)
+         follows_you, you_follow, previous_follows_you, relation_batch, review_after, updated_at)
+        VALUES (?, ?, ?, 'Instagram', ?, 'instagram_export', 0, 35, ?, ?, NULL, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(username) DO UPDATE SET
+          previous_follows_you = growth_targets.follows_you,
           follows_you = excluded.follows_you,
           you_follow = excluded.you_follow,
+          relation_batch = excluded.relation_batch,
+          unfollowed_you_at = CASE
+            WHEN growth_targets.follows_you = 1 AND excluded.follows_you = 0 THEN CURRENT_TIMESTAMP
+            WHEN excluded.follows_you = 1 THEN NULL
+            ELSE growth_targets.unfollowed_you_at
+          END,
           review_after = CASE
             WHEN excluded.you_follow = 1 AND excluded.follows_you = 0
               THEN COALESCE(growth_targets.review_after, excluded.review_after)
@@ -168,11 +195,33 @@ async function importRelations(followers: string[], following: string[]) {
           `https://www.instagram.com/${username}/`,
           followsYou,
           youFollow,
+          batchId,
           reviewAfter,
         );
     });
     if (statements.length) await env.DB.batch(statements);
   }
+  await env.DB.prepare(`INSERT OR IGNORE INTO follower_events
+    (external_id, username, event_type, batch_id)
+    SELECT external_id, username, 'unfollowed', ? FROM growth_targets
+    WHERE relation_batch = ? AND previous_follows_you = 1 AND follows_you = 0`)
+    .bind(batchId, batchId).run();
+  await env.DB.prepare(`INSERT OR IGNORE INTO follower_events
+    (external_id, username, event_type, batch_id)
+    SELECT external_id, username, 'unfollowed', ? FROM growth_targets
+    WHERE follows_you = 1 AND COALESCE(relation_batch, '') <> ?`)
+    .bind(batchId, batchId).run();
+  await env.DB.prepare(`UPDATE growth_targets SET
+    previous_follows_you = follows_you,
+    follows_you = 0,
+    relation_batch = ?,
+    unfollowed_you_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+    WHERE follows_you = 1 AND COALESCE(relation_batch, '') <> ?`)
+    .bind(batchId, batchId).run();
+  await env.DB.prepare(`INSERT INTO relation_imports
+    (batch_id, followers_count, following_count) VALUES (?, ?, ?)`)
+    .bind(batchId, followerSet.size, followingSet.size).run();
   return { followers: followerSet.size, following: followingSet.size, compared: usernames.length };
 }
 
@@ -203,6 +252,24 @@ async function addTarget(usernameValue: string, source: string, sourceDetail: st
 async function generateToday() {
   const date = todayRome();
   const settings = await readSettings();
+  await env.DB.prepare(`UPDATE daily_actions SET status = 'invalid'
+    WHERE action_date = ? AND status = 'pending' AND action_type IN ('follow', 'follow_back')
+      AND EXISTS (
+        SELECT 1 FROM growth_targets t
+        WHERE t.external_id = daily_actions.external_id AND t.you_follow IS NOT 0
+      )`).bind(date).run();
+  await env.DB.prepare(`UPDATE daily_actions SET status = 'pending'
+    WHERE action_date = ? AND status = 'invalid' AND action_type IN ('follow', 'follow_back')
+      AND EXISTS (
+        SELECT 1 FROM growth_targets t
+        WHERE t.external_id = daily_actions.external_id AND t.you_follow = 0
+      )`).bind(date).run();
+  await env.DB.prepare(`UPDATE daily_actions SET status = 'invalid'
+    WHERE status = 'pending' AND action_type = 'lost_follower'
+      AND EXISTS (
+        SELECT 1 FROM growth_targets t
+        WHERE t.external_id = daily_actions.external_id AND t.unfollowed_you_at IS NULL
+      )`).run();
   await env.DB.prepare(`INSERT OR IGNORE INTO daily_actions
     (action_date, external_id, action_type, probability, reason)
     SELECT ?, t.external_id,
@@ -217,8 +284,7 @@ async function generateToday() {
         ELSE 'Target manuale da qualificare prima del follow'
       END
     FROM growth_targets t
-    LEFT JOIN protected_profiles p ON p.external_id = t.external_id
-    WHERE COALESCE(t.you_follow, 0) = 0
+    WHERE t.you_follow = 0
       AND t.username <> ''
       AND NOT EXISTS (
         SELECT 1 FROM daily_actions old
@@ -257,6 +323,22 @@ async function generateToday() {
       AND datetime(t.review_after) <= datetime('now')
     ORDER BY t.review_after ASC, t.score ASC
     LIMIT ?`).bind(date, settings.unfollows_per_day).run();
+
+  await env.DB.prepare(`INSERT OR IGNORE INTO daily_actions
+    (action_date, external_id, action_type, probability, reason)
+    SELECT ?, t.external_id, 'lost_follower', 100,
+      'Compariva tra i follower nel confronto precedente e ora non compare più'
+    FROM growth_targets t
+    WHERE t.unfollowed_you_at IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM daily_actions old
+        WHERE old.external_id = t.external_id
+          AND old.action_type = 'lost_follower'
+          AND old.status = 'completed'
+          AND datetime(old.completed_at) >= datetime(t.unfollowed_you_at)
+      )
+    ORDER BY t.unfollowed_you_at DESC
+    LIMIT 50`).bind(date).run();
 }
 
 async function completeAction(id: number) {
@@ -280,14 +362,15 @@ async function completeAction(id: number) {
 
 async function readPlanner() {
   const date = todayRome();
-  const [actions, settings, totals] = await Promise.all([
+  const [actions, settings, totals, lastImport] = await Promise.all([
     env.DB.prepare(`SELECT a.id, a.action_date, a.action_type, a.probability, a.reason, a.status,
       a.created_at, a.completed_at, t.external_id, t.username, t.display_name, t.profile_url,
-      t.source, t.source_detail, t.interactions, t.follows_you, t.you_follow, t.review_after
+      t.source, t.source_detail, t.interactions, t.follows_you, t.you_follow, t.review_after,
+      t.unfollowed_you_at
       FROM daily_actions a JOIN growth_targets t ON t.external_id = a.external_id
-      WHERE a.action_date = ?
+      WHERE a.action_date = ? AND a.status <> 'invalid'
       ORDER BY CASE a.action_type WHEN 'follow' THEN 1 WHEN 'follow_back' THEN 1
-        WHEN 'comment' THEN 2 WHEN 'unfollow' THEN 3 ELSE 4 END,
+        WHEN 'comment' THEN 2 WHEN 'unfollow' THEN 3 WHEN 'lost_follower' THEN 4 ELSE 5 END,
         a.status = 'completed', a.probability DESC`).bind(date).all(),
     readSettings(),
     env.DB.prepare(`SELECT
@@ -295,8 +378,11 @@ async function readPlanner() {
       SUM(CASE WHEN follows_you = 1 THEN 1 ELSE 0 END) AS followers,
       SUM(CASE WHEN you_follow = 1 THEN 1 ELSE 0 END) AS following,
       SUM(CASE WHEN you_follow = 1 AND follows_you = 0 THEN 1 ELSE 0 END) AS non_followers,
+      SUM(CASE WHEN unfollowed_you_at IS NOT NULL THEN 1 ELSE 0 END) AS lost_followers,
       SUM(CASE WHEN source = 'exchange_group' THEN 1 ELSE 0 END) AS exchange_targets
       FROM growth_targets`).first(),
+    env.DB.prepare(`SELECT followers_count, following_count, imported_at
+      FROM relation_imports ORDER BY imported_at DESC LIMIT 1`).first(),
   ]);
   const rows = actions.results ?? [];
   return {
@@ -304,12 +390,14 @@ async function readPlanner() {
     actions: rows,
     settings,
     totals,
+    lastImport,
     summary: {
       pending: rows.filter((item) => item.status === "pending").length,
       completed: rows.filter((item) => item.status === "completed").length,
       follows: rows.filter((item) => item.action_type === "follow" || item.action_type === "follow_back").length,
       comments: rows.filter((item) => item.action_type === "comment").length,
       unfollows: rows.filter((item) => item.action_type === "unfollow").length,
+      lostFollowers: rows.filter((item) => item.action_type === "lost_follower").length,
     },
   };
 }

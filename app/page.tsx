@@ -105,7 +105,7 @@ type GrowthState = {
 type PlannerAction = {
   id: number;
   action_date: string;
-  action_type: "follow" | "follow_back" | "comment" | "unfollow";
+  action_type: "follow" | "follow_back" | "comment" | "unfollow" | "lost_follower";
   probability: number;
   reason: string;
   status: "pending" | "completed" | "skipped";
@@ -119,14 +119,16 @@ type PlannerAction = {
   follows_you: number | null;
   you_follow: number | null;
   review_after: string | null;
+  unfollowed_you_at?: string | null;
 };
 
 type PlannerState = {
   date: string;
   actions: PlannerAction[];
   settings: { follows_per_day: number; comments_per_day: number; unfollows_per_day: number; review_days: number };
-  totals: { targets?: number; followers?: number; following?: number; non_followers?: number; exchange_targets?: number };
-  summary: { pending: number; completed: number; follows: number; comments: number; unfollows: number };
+  totals: { targets?: number; followers?: number; following?: number; non_followers?: number; lost_followers?: number; exchange_targets?: number };
+  summary: { pending: number; completed: number; follows: number; comments: number; unfollows: number; lostFollowers: number };
+  lastImport?: { followers_count: number; following_count: number; imported_at: string } | null;
   importResult?: { followers: number; following: number; compared: number } | null;
 };
 
@@ -159,7 +161,7 @@ const emptyPlanner: PlannerState = {
   actions: [],
   settings: { follows_per_day: 12, comments_per_day: 10, unfollows_per_day: 8, review_days: 10 },
   totals: {},
-  summary: { pending: 0, completed: 0, follows: 0, comments: 0, unfollows: 0 },
+  summary: { pending: 0, completed: 0, follows: 0, comments: 0, unfollows: 0, lostFollowers: 0 },
 };
 
 function initials(value: string) {
@@ -432,10 +434,10 @@ export default function Home() {
               <span className="avatar mini">{initials(action.display_name || action.username)}</span>
               <div><strong>@{action.username}</strong><small>{action.reason}</small></div>
             </div>
-            <div className="probability"><strong>{action.probability}%</strong><span>reciprocità stimata</span></div>
+            <div className="probability"><strong>{action.action_type === "lost_follower" ? "Rilevato" : `${action.probability}%`}</strong><span>{action.action_type === "lost_follower" ? formatDate(action.unfollowed_you_at) : "reciprocità stimata"}</span></div>
             <div className="daily-buttons">
               <a href={action.profile_url} target="_blank" rel="noreferrer">Apri profilo</a>
-              <button onClick={() => void plannerRequest({ operation: "complete", actionId: action.id }, "Azione completata")}>Fatto</button>
+              <button onClick={() => void plannerRequest({ operation: "complete", actionId: action.id }, action.action_type === "lost_follower" ? "Segnalazione archiviata" : "Azione completata")}>{action.action_type === "lost_follower" ? "Archivia" : "Fatto"}</button>
               <button className="skip" onClick={() => void plannerRequest({ operation: "skip", actionId: action.id })}>Salta</button>
             </div>
           </div>
@@ -566,6 +568,7 @@ export default function Home() {
                 <span><strong>{planner.summary.follows}</strong> follow</span>
                 <span><strong>{planner.summary.comments}</strong> commenti</span>
                 <span><strong>{planner.summary.unfollows}</strong> defollow</span>
+                <span><strong>{planner.summary.lostFollowers}</strong> ti hanno defollowato</span>
               </div>
             </section>
 
@@ -573,6 +576,7 @@ export default function Home() {
               {dailyActionPanel("Chi seguire", "FOLLOW STRATEGICI", ["follow", "follow_back"], "Aggiungi target o importa le liste Instagram per creare i follow di oggi.")}
               {dailyActionPanel("Chi commentare", "CONVERSAZIONI CALDE", ["comment"], "I profili compariranno quando commentano o interagiscono con i tuoi contenuti.")}
               {dailyActionPanel("Chi defolloware", "SCREMATURA PROTETTA", ["unfollow"], "Importa Follower e Seguiti: Orbit escluderà gli intoccabili e proporrà solo i non reciproci.")}
+              {dailyActionPanel("Chi ti ha defollowato", "CONTROLLO PERDITE", ["lost_follower"], planner.lastImport ? "Nessun nuovo defollow rilevato rispetto al confronto precedente." : "Importa oggi le liste; dal confronto successivo Orbit rileverà ogni follower perso, anche se non lo segui.")}
             </section>
 
             <section className="today-footer-grid">
@@ -586,6 +590,7 @@ export default function Home() {
                 <p className="eyebrow">BASE RELAZIONI</p><h2>Dati per decidere</h2>
                 <div className="relation-number"><span>Target caricati</span><strong>{formatNumber(planner.totals.targets)}</strong></div>
                 <div className="relation-number"><span>Non ricambiano</span><strong>{formatNumber(planner.totals.non_followers)}</strong></div>
+                <div className="relation-number"><span>Defollow rilevati</span><strong>{formatNumber(planner.totals.lost_followers)}</strong></div>
                 <div className="relation-number"><span>Da gruppi di scambio</span><strong>{formatNumber(planner.totals.exchange_targets)}</strong></div>
                 <button className="primary" onClick={() => setActive("Relazioni")}>Importa o aggiungi target</button>
               </article>
@@ -662,6 +667,7 @@ export default function Home() {
             <article className="panel import-panel">
               <p className="eyebrow">CONFRONTO COMPLETO</p><h2>Importa Follower e Seguiti</h2>
               <p className="muted">Usa i file JSON, CSV o TXT scaricati da Instagram. Il confronto individua chi segui ma non ti segue.</p>
+              {planner.lastImport && <p className="last-import">Ultimo confronto: {formatDate(planner.lastImport.imported_at)} · {formatNumber(planner.lastImport.followers_count)} follower · {formatNumber(planner.lastImport.following_count)} seguiti</p>}
               <div className="file-import-grid">
                 <label className={importFollowers ? "file-box ready" : "file-box"}>
                   <strong>{importFollowers ? `${importFollowers.length} follower letti` : "File Follower"}</strong>
