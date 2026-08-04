@@ -53,7 +53,8 @@ if ($LASTEXITCODE -ne 0) { throw "Accesso Instagram non riuscito: attività auto
 & $pythonPath $agentScript sync --config $configPath
 if ($LASTEXITCODE -ne 0) { throw "Prima sincronizzazione non riuscita: attività automatica non registrata" }
 
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew `
+  -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 
 $syncTaskName = "Orbit Instagram Sync"
 $syncAction = New-ScheduledTaskAction -Execute $pythonPath -Argument "`"$agentScript`" sync --config `"$configPath`"" -WorkingDirectory $projectRoot
