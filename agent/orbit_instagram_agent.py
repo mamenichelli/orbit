@@ -19,6 +19,12 @@ KEYRING_SERVICE = "Orbit Social Growth - Instagram"
 INSTAGRAM_WEB_APP_ID = "936619743392459"
 
 
+class InstagramRateLimited(RuntimeError):
+    def __init__(self, retry_after: int):
+        self.retry_after = max(60, int(retry_after))
+        super().__init__(f"Limite Instagram attivo; riprova tra {self.retry_after} secondi")
+
+
 def load_config(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.exists():
@@ -43,6 +49,21 @@ def session_path(config_path: Path) -> Path:
     directory = config_path.parent / ".orbit-agent"
     directory.mkdir(parents=True, exist_ok=True)
     return directory / "instagram-session.json"
+
+
+def cooldown_path(config_path: Path) -> Path:
+    directory = config_path.parent / ".orbit-agent"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / "instagram-cooldown.json"
+
+
+def record_rate_limit(config_path: Path, retry_after: int) -> int:
+    retry_at = int(time.time()) + max(60, int(retry_after))
+    cooldown_path(config_path).write_text(
+        json.dumps({"retry_at": retry_at}, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return retry_at
 
 
 class InstagramWebSession:
@@ -81,6 +102,13 @@ class InstagramWebSession:
             timeout=60,
             allow_redirects=False,
         )
+        if response.status_code == 429:
+            raw_retry_after = response.headers.get("Retry-After", "")
+            try:
+                retry_after = int(raw_retry_after)
+            except (TypeError, ValueError):
+                retry_after = 30 * 60
+            raise InstagramRateLimited(retry_after)
         if 300 <= response.status_code < 400:
             location = response.headers.get("Location", "")
             raise RuntimeError(
@@ -162,27 +190,13 @@ def login_for_setup(username: str, password: str, settings_file: Path) -> Client
 
 
 def web_client_from_session_id(session_id: str, expected_username: str) -> InstagramWebSession:
-    """Create and validate a read-only Instagram Web session."""
+    """Create a read-only web session; validation happens during sync."""
     user_match = re.match(r"^\d+", session_id)
     if not user_match or len(session_id) <= 30:
         raise RuntimeError("Session ID non valido")
 
     user_id = user_match.group(0)
     client = InstagramWebSession(session_id, expected_username, user_id)
-    profile = client.profile_by_username(expected_username)
-    profile_id = str(profile.get("id") or profile.get("pk") or "")
-    logged_username = str(profile.get("username") or "").lower()
-    if profile_id and profile_id != user_id:
-        raise RuntimeError(
-            f"Il cookie appartiene all'account {user_id}, ma @{expected_username} ha ID {profile_id}"
-        )
-    if logged_username != expected_username.lower():
-        raise RuntimeError(
-            f"La sessione appartiene a @{logged_username}, Orbit attende @{expected_username}"
-        )
-    # This authenticated relation request proves that the cookie is accepted;
-    # the public profile endpoint alone would not be sufficient validation.
-    client.relation_users(user_id, "followers", amount=1)
     return client
 
 
@@ -319,7 +333,7 @@ def discover_candidates(
     own_following: set[str],
     per_seed: int,
     max_candidates: int,
-    automatic_seeds: list[str],
+    automatic_seeds: list[Any],
 ) -> list[dict[str, Any]]:
     raw: dict[str, tuple[Any, str]] = {}
     web_session = getattr(client, "_orbit_auth_mode", "mobile") == "web"
@@ -343,7 +357,7 @@ def discover_candidates(
         except Exception as exc:
             print(f"Suggerimenti Instagram non disponibili: {type(exc).__name__}")
 
-    effective_seeds = list(seeds)
+    effective_seeds: list[Any] = list(seeds)
     if not effective_seeds:
         # Rotate through accounts already followed and inspect their audiences:
         # this provides automatic, relevant second-degree discovery.
@@ -351,16 +365,25 @@ def discover_candidates(
         random.Random(time.strftime("%Y-%m-%d")).shuffle(effective_seeds)
         effective_seeds = effective_seeds[:3]
 
-    for seed in effective_seeds:
+    for seed_record in effective_seeds:
         if len(raw) >= max_candidates * 3:
             break
-        seed = seed.strip().replace("@", "").lower()
+        seed = (
+            seed_record.strip().replace("@", "").lower()
+            if isinstance(seed_record, str)
+            else username_of(seed_record)
+        )
         if not seed:
             continue
         try:
             if web_session:
-                seed_profile = client.profile_by_username(seed)
-                seed_id = str(seed_profile.get("id") or seed_profile.get("pk") or "")
+                seed_id = str(
+                    field_of(seed_record, "pk", "")
+                    or field_of(seed_record, "id", "")
+                )
+                if not seed_id:
+                    seed_profile = client.profile_by_username(seed)
+                    seed_id = str(seed_profile.get("id") or seed_profile.get("pk") or "")
                 if not seed_id:
                     raise RuntimeError("ID seed non disponibile")
                 stream = client.relation_users(seed_id, "followers", amount=per_seed)
@@ -381,6 +404,8 @@ def discover_candidates(
                     and username not in raw
                 ):
                     raw[username] = (user, seed)
+        except InstagramRateLimited:
+            raise
         except Exception as exc:  # one inaccessible seed must not stop the daily snapshot
             print(f"Seed @{seed} saltato: {type(exc).__name__}")
         time.sleep(random.uniform(2.0, 4.0))
@@ -395,7 +420,9 @@ def discover_candidates(
                 or field_of(short_user, "id", "")
                 or client.user_id_from_username(username)
             )
-            profile = client.profile_by_username(username) if web_session else client.user_info(user_id)
+            # Relationship payloads already contain the signals needed for the
+            # first ranking. Avoid one extra profile request per candidate.
+            profile = short_user if web_session else client.user_info(user_id)
             score, signal = score_candidate(profile)
             candidates.append({
                 "externalId": f"ig:{user_id}",
@@ -405,9 +432,12 @@ def discover_candidates(
                 "reason": signal,
                 "score": score,
             })
+        except InstagramRateLimited:
+            raise
         except Exception as exc:
             print(f"Profilo @{username} saltato: {type(exc).__name__}")
-        time.sleep(random.uniform(1.2, 2.5))
+        if not web_session:
+            time.sleep(random.uniform(1.2, 2.5))
     return sorted(candidates, key=lambda item: int(item["score"]), reverse=True)
 
 
@@ -436,26 +466,42 @@ def sync(config_path: Path) -> None:
     client = login_saved(config, config_path)
     max_relations = max(0, int(config.get("ORBIT_MAX_RELATIONS", "0") or 0))
     user_id = str(getattr(client, "_orbit_user_id", None) or client.user_id)
-    if getattr(client, "_orbit_auth_mode", "mobile") == "web":
-        followers_stream = client.relation_users(user_id, "followers", amount=max_relations)
-        following_stream = client.relation_users(user_id, "following", amount=max_relations)
-    else:
-        followers_stream = client.iter_user_followers_v1(user_id, amount=max_relations, page_size=200)
-        following_stream = client.iter_user_following_v1(user_id, amount=max_relations, page_size=200)
+    try:
+        if getattr(client, "_orbit_auth_mode", "mobile") == "web":
+            followers_stream = client.relation_users(user_id, "followers", amount=max_relations)
+            following_stream = client.relation_users(user_id, "following", amount=max_relations)
+        else:
+            followers_stream = client.iter_user_followers_v1(user_id, amount=max_relations, page_size=200)
+            following_stream = client.iter_user_following_v1(user_id, amount=max_relations, page_size=200)
+    except InstagramRateLimited as exc:
+        retry_at = record_rate_limit(config_path, exc.retry_after)
+        retry_time = time.strftime("%d/%m/%Y %H:%M", time.localtime(retry_at))
+        print(
+            "Sessione salvata. Instagram ha applicato un limite temporaneo; "
+            f"Orbit riprovera automaticamente dopo le {retry_time}."
+        )
+        return
     followers_list, _ = collect_users(followers_stream)
-    following_list, _ = collect_users(following_stream)
+    following_list, following_users = collect_users(following_stream)
     followers = set(followers_list)
     following = set(following_list)
     seeds = [item.strip() for item in config.get("ORBIT_DISCOVERY_SEEDS", "").split(",") if item.strip()]
-    candidates = discover_candidates(
-        client,
-        seeds,
-        followers,
-        following,
-        per_seed=max(5, min(100, int(config.get("ORBIT_USERS_PER_SEED", "40") or 40))),
-        max_candidates=max(1, min(100, int(config.get("ORBIT_MAX_CANDIDATES", "30") or 30))),
-        automatic_seeds=following_list,
-    )
+    candidate_retry_pending = False
+    try:
+        candidates = discover_candidates(
+            client,
+            seeds,
+            followers,
+            following,
+            per_seed=max(5, min(100, int(config.get("ORBIT_USERS_PER_SEED", "40") or 40))),
+            max_candidates=max(1, min(100, int(config.get("ORBIT_MAX_CANDIDATES", "30") or 30))),
+            automatic_seeds=list(following_users.values()),
+        )
+    except InstagramRateLimited as exc:
+        record_rate_limit(config_path, exc.retry_after)
+        print("Ricerca candidati rinviata per limite Instagram; follower e seguiti saranno comunque salvati.")
+        candidates = []
+        candidate_retry_pending = True
     endpoint = required(config, "ORBIT_DASHBOARD_URL").rstrip("/") + "/api/agent/instagram-sync"
     response = requests.post(
         endpoint,
@@ -470,6 +516,8 @@ def sync(config_path: Path) -> None:
     )
     response.raise_for_status()
     result = response.json()
+    if not candidate_retry_pending:
+        cooldown_path(config_path).unlink(missing_ok=True)
     print(
         f"Sincronizzazione completata: {result['followers']} follower, "
         f"{result['following']} seguiti, {result['candidates']} candidati."

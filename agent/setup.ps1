@@ -51,7 +51,18 @@ if ($LASTEXITCODE -ne 0) { throw "Prima sincronizzazione non riuscita: attività
 
 $taskName = "Orbit Instagram Sync"
 $action = New-ScheduledTaskAction -Execute $pythonPath -Argument "`"$agentScript`" sync --config `"$configPath`"" -WorkingDirectory $projectRoot
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddHours($EveryHours) `
+$firstRunAt = (Get-Date).AddHours($EveryHours)
+$cooldownPath = Join-Path $projectRoot ".orbit-agent\instagram-cooldown.json"
+if (Test-Path -LiteralPath $cooldownPath) {
+  try {
+    $cooldown = Get-Content -LiteralPath $cooldownPath -Raw | ConvertFrom-Json
+    $retryAt = [DateTimeOffset]::FromUnixTimeSeconds([long]$cooldown.retry_at).LocalDateTime
+    if ($retryAt -gt (Get-Date)) { $firstRunAt = $retryAt }
+  } catch {
+    $firstRunAt = (Get-Date).AddMinutes(30)
+  }
+}
+$trigger = New-ScheduledTaskTrigger -Once -At $firstRunAt `
   -RepetitionInterval (New-TimeSpan -Hours $EveryHours) `
   -RepetitionDuration (New-TimeSpan -Days 3650)
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew

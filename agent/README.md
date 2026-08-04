@@ -40,5 +40,6 @@ La modalità browser automatizzata resta disponibile con `-AuthMode browser`, ma
 bloccarla per ragioni di sicurezza; non va usata quando Facebook richiede l’accesso Google.
 
 L'accesso usa API Instagram non ufficiali. Può essere soggetto a challenge o limiti di frequenza;
-se Instagram invalida la sessione, riesegui `setup.ps1`. L'agente non esegue follow, like,
-commenti o unfollow automatici.
+se Instagram risponde con HTTP 429, Orbit conserva la sessione e pianifica automaticamente il
+tentativo successivo senza richiedere di nuovo il cookie. Se Instagram invalida la sessione,
+riesegui `setup.ps1`. L'agente non esegue follow, like, commenti o unfollow automatici.

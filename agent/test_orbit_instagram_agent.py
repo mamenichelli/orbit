@@ -12,12 +12,12 @@ class _Cookies:
 
 
 class _Response:
-    def __init__(self, payload, url, status_code=200, text=""):
+    def __init__(self, payload, url, status_code=200, text="", headers=None):
         self.payload = payload
         self.url = url
         self.status_code = status_code
         self.text = text
-        self.headers = {}
+        self.headers = headers or {}
 
     def json(self):
         return self.payload
@@ -46,7 +46,7 @@ class _HTTPSession:
 
 
 class InstagramWebSessionTests(TestCase):
-    def test_session_cookie_uses_only_www_web_json_endpoints(self):
+    def test_session_cookie_is_saved_without_hitting_rate_limited_endpoints(self):
         session_id = "1234567890%3A" + ("x" * 40)
         http = _HTTPSession()
         with mock.patch.object(orbit.requests, "Session", return_value=http):
@@ -55,32 +55,32 @@ class InstagramWebSessionTests(TestCase):
         self.assertEqual(client._orbit_auth_mode, "web")
         self.assertEqual(client._orbit_user_id, "1234567890")
         self.assertEqual(http.cookies.values["sessionid"], session_id)
-        called_urls = [url for url, _kwargs in http.calls]
-        self.assertTrue(any("web_profile_info" in url for url in called_urls))
-        self.assertTrue(any("friendships/1234567890/followers" in url for url in called_urls))
-        self.assertFalse(any("graphql" in url or "i.instagram.com" in url for url in called_urls))
+        self.assertEqual(http.calls, [])
+
+    def test_http_429_becomes_a_deferred_retry(self):
+        http = _HTTPSession()
+        http.get = mock.Mock(
+            return_value=_Response(
+                None,
+                "https://www.instagram.com/api/v1/friendships/123/followers/",
+                status_code=429,
+                headers={"Retry-After": "120"},
+            )
+        )
+        client = orbit.InstagramWebSession("1234567890%3A" + ("x" * 40), "test.account", "1234567890")
+        client.http = http
+
+        with self.assertRaises(orbit.InstagramRateLimited) as raised:
+            client.relation_users("1234567890", "followers", amount=1)
+
+        self.assertEqual(raised.exception.retry_after, 120)
 
     def test_web_discovery_uses_second_degree_profiles(self):
         candidate = {"pk": "99", "username": "candidate"}
-        profile = {
-            "id": "99",
-            "username": "candidate",
-            "full_name": "Candidate",
-            "follower_count": 500,
-            "following_count": 600,
-            "media_count": 20,
-            "is_private": False,
-            "is_verified": False,
-        }
-
-        def profile_by_username(username):
-            return {"id": "55", "username": "affine"} if username == "affine" else profile
-
         client = mock.Mock()
         client._orbit_auth_mode = "web"
         client._orbit_user_id = "1234567890"
         client.user_id = "1234567890"
-        client.profile_by_username.side_effect = profile_by_username
         client.relation_users.return_value = [candidate]
 
         with mock.patch.object(orbit.time, "sleep"):
@@ -91,9 +91,9 @@ class InstagramWebSessionTests(TestCase):
                 own_following={"affine"},
                 per_seed=40,
                 max_candidates=10,
-                automatic_seeds=["affine"],
+                automatic_seeds=[{"pk": "55", "username": "affine"}],
             )
 
         self.assertEqual([item["username"] for item in result], ["candidate"])
         client.relation_users.assert_called_once_with("55", "followers", amount=40)
-        client.profile_by_username.assert_any_call("candidate")
+        client.profile_by_username.assert_not_called()
