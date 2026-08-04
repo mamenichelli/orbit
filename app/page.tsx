@@ -247,6 +247,7 @@ export default function Home() {
   const [toast, setToast] = useState("");
   const [loading, setLoading] = useState(true);
   const [syncError, setSyncError] = useState("");
+  const [hiddenActionIds, setHiddenActionIds] = useState<Set<number>>(() => new Set());
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -365,6 +366,23 @@ export default function Home() {
     }
   };
 
+  const resolvePlannerAction = (action: PlannerAction, operation: "complete" | "skip") => {
+    setHiddenActionIds((current) => new Set(current).add(action.id));
+    const message = operation === "complete"
+      ? action.action_type === "lost_follower" ? "Segnalazione archiviata" : "Azione completata"
+      : undefined;
+    void plannerRequest({ operation, actionId: action.id }, message).then((ok) => {
+      if (!ok) {
+        setHiddenActionIds((current) => {
+          const next = new Set(current);
+          next.delete(action.id);
+          return next;
+        });
+        void refresh();
+      }
+    });
+  };
+
   const addManualTarget = async () => {
     const ok = await plannerRequest({
       operation: "add_target",
@@ -420,7 +438,7 @@ export default function Home() {
     }
   };
 
-  const pendingActions = planner.actions.filter((action) => action.status === "pending");
+  const pendingActions = planner.actions.filter((action) => action.status === "pending" && !hiddenActionIds.has(action.id));
   const dailyActionPanel = (
     title: string,
     eyebrow: string,
@@ -441,8 +459,8 @@ export default function Home() {
             <div className="probability"><strong>{action.action_type === "lost_follower" ? "Rilevato" : `${action.probability}/100`}</strong><span>{action.action_type === "lost_follower" ? formatDate(action.unfollowed_you_at) : "punteggio reciprocità"}</span></div>
             <div className="daily-buttons">
               <a href={action.profile_url} target="_blank" rel="noreferrer">Apri profilo</a>
-              <button onClick={() => void plannerRequest({ operation: "complete", actionId: action.id }, action.action_type === "lost_follower" ? "Segnalazione archiviata" : "Azione completata")}>{action.action_type === "lost_follower" ? "Archivia" : "Fatto"}</button>
-              <button className="skip" onClick={() => void plannerRequest({ operation: "skip", actionId: action.id })}>Salta</button>
+              <button onClick={() => resolvePlannerAction(action, "complete")}>{action.action_type === "lost_follower" ? "Archivia" : "Fatto"}</button>
+              <button className="skip" onClick={() => resolvePlannerAction(action, "skip")}>Salta</button>
             </div>
           </div>
         ))}
@@ -456,7 +474,7 @@ export default function Home() {
         <div><p className="eyebrow">PRIORITÀ AUTOMATICHE</p><h2>Profili con maggiore reciprocità</h2></div>
         <span className="live-pill">● LIVE</span>
       </div>
-      <p className="muted">Prima chi ha già messo like o commentato; poi profili italiani attivi, privilegiando le donne che lo dichiarano nella bio. Esclusi account vuoti e grandi profili che seguono pochissime persone.</p>
+      <p className="muted">La lista automatica accetta solo donne con segnali pubblici italiani e identità femminile dichiarata nella bio. Esclusi account vuoti, inattivi e grandi profili che seguono pochissime persone.</p>
       <div className="candidate-list">
         {loading && !snapshot.opportunities.length && <div className="all-done">Sto verificando attività, relazioni e segnali di reciprocità…</div>}
         {!loading && !visibleCandidates.length && (
@@ -578,7 +596,7 @@ export default function Home() {
               <article className="panel routine-panel">
                 <p className="eyebrow">STRATEGIA QUOTIDIANA</p><h2>Routine di crescita</h2>
                 <div className="routine-step"><span>1</span><div><strong>Reciprocità osservata</strong><small>Prima chi ha già lasciato like o commenti; poi profili vicini con segnali favorevoli.</small></div></div>
-                <div className="routine-step"><span>2</span><div><strong>Italia, principalmente donne</strong><small>Richiede segnali italiani pubblici e privilegia l’identità femminile dichiarata nella bio; esclude account vuoti, inattivi o sproporzionati.</small></div></div>
+                <div className="routine-step"><span>2</span><div><strong>Donne italiane verificate</strong><small>Richiede segnali italiani pubblici e identità femminile dichiarata nella bio; esclude account vuoti, inattivi o sproporzionati.</small></div></div>
                 <div className="routine-step"><span>3</span><div><strong>Controllo dopo 10 giorni</strong><small>Ogni follow completato entra automaticamente nella finestra di revisione.</small></div></div>
               </article>
               <article className="panel relation-snapshot">
@@ -618,7 +636,7 @@ export default function Home() {
             </article>
             <article className="panel agent-panel">
               <p className="eyebrow">AGENTE OPEN SOURCE</p><h2>Sincronizzazione automatica</h2>
-              <p className="muted">Il connettore locale gratuito scarica follower e seguiti, elimina chi già segui e ogni 6 ore prepara candidati italiani attivi, privilegiando le donne che lo dichiarano nella bio.</p>
+              <p className="muted">Il connettore locale gratuito scarica follower e seguiti, elimina chi già segui e ogni 6 ore prepara soltanto donne italiane attive che lo dichiarano nella bio.</p>
               <div className={planner.agentStatus ? "agent-state active" : "agent-state"}>
                 <span>{planner.agentStatus ? "● ATTIVO" : "○ DA ATTIVARE"}</span>
                 <strong>{planner.agentStatus ? `Ultimo invio ${formatDate(planner.agentStatus.created_at)}` : "Esegui una volta agent/setup.ps1 sul PC"}</strong>

@@ -28,7 +28,7 @@ Lo script:
 3. scarica follower e seguiti;
 4. esclude follower attuali e persone già seguite;
 5. analizza follower recenti dei profili seed e apre i profili per verificarne attività e rapporto seguiti/follower;
-6. mantiene solo profili con segnali pubblici italiani, scarta account vuoti, inattivi o sproporzionati e privilegia le donne che lo dichiarano nella bio;
+6. mantiene solo donne con segnali pubblici italiani e identità femminile dichiarata nella bio, scartando account vuoti, inattivi o sproporzionati;
 7. invia alla dashboard la lista ordinata;
 8. registra l'attività pianificata `Orbit Instagram Sync` ogni 6 ore.
 

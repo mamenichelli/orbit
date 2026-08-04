@@ -341,12 +341,9 @@ def score_candidate(profile: Any) -> tuple[int, str, dict[str, Any]] | None:
         r"genova|venezia|verona|bari|catania|sardegna|sicilia|toscana|lombardia|lazio)\b|\.it\b",
         public_text,
     ))
-    italian_markers = set(re.findall(
-        r"\b(sono|della|degli|anche|con|per|mamma|moglie|ragazza|donna|italiana|"
-        r"viaggi|moda|bellezza|fotografia|cucina|famiglia|imprenditrice)\b",
-        public_text,
-    ))
-    italian_signal = italian_strong or len(italian_markers) >= 2
+    # Italian language alone is not enough: require a public declaration of
+    # Italy/Italian identity, an Italian location, or an Italian web domain.
+    italian_signal = italian_strong
     female_self_declared = bool(re.search(
         r"\b(she\s*/\s*her|lei|donna|ragazza|mamma|moglie|imprenditrice|"
         r"fondatrice|fotografa|autrice|italiana)\b",
@@ -366,7 +363,7 @@ def score_candidate(profile: Any) -> tuple[int, str, dict[str, Any]] | None:
 
     # Hard filters: these profiles consume follow slots but show little evidence
     # that they reciprocate or are maintained by a real, active person.
-    if not italian_signal or anonymous or media_count < 3 or followers <= 0 or following < 50:
+    if not italian_signal or not female_self_declared or anonymous or media_count < 3 or followers <= 0 or following < 50:
         return None
     if followers > 10_000 and ratio < 0.50:
         return None

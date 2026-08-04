@@ -164,6 +164,28 @@ class InstagramWebSessionTests(TestCase):
 
         self.assertIsNone(orbit.score_candidate(profile))
 
+    def test_score_rejects_italian_language_without_declared_location_or_identity(self):
+        profile = {
+            "biography": "Mamma, moda, bellezza e viaggi",
+            "follower_count": 700,
+            "following_count": 800,
+            "media_count": 30,
+            "is_private": True,
+        }
+
+        self.assertIsNone(orbit.score_candidate(profile))
+
+    def test_score_rejects_male_profile_even_when_italian_and_active(self):
+        profile = {
+            "biography": "Creator italiano di Milano, moda e viaggi",
+            "follower_count": 700,
+            "following_count": 800,
+            "media_count": 30,
+            "is_private": True,
+        }
+
+        self.assertIsNone(orbit.score_candidate(profile))
+
     def test_score_marks_female_identity_only_from_public_bio(self):
         profile = {
             "biography": "Imprenditrice italiana, mamma e fotografa a Roma",

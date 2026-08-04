@@ -292,13 +292,18 @@ async function generateToday() {
     WHERE action_date = ? AND status = 'pending' AND action_type IN ('follow', 'follow_back')
       AND EXISTS (
         SELECT 1 FROM growth_targets t
-        WHERE t.external_id = daily_actions.external_id AND t.you_follow IS NOT 0
-      )`).bind(date).run();
-  await env.DB.prepare(`UPDATE daily_actions SET status = 'pending'
-    WHERE action_date = ? AND status = 'invalid' AND action_type IN ('follow', 'follow_back')
-      AND EXISTS (
-        SELECT 1 FROM growth_targets t
-        WHERE t.external_id = daily_actions.external_id AND t.you_follow = 0
+        WHERE t.external_id = daily_actions.external_id
+          AND (
+            t.you_follow IS NOT 0
+            OR (
+              t.source IN ('organic_interaction', 'open_source_discovery')
+              AND COALESCE(t.italian_signal, 0) <> 1
+            )
+            OR (
+              t.source = 'open_source_discovery'
+              AND COALESCE(t.female_self_declared, 0) <> 1
+            )
+          )
       )`).bind(date).run();
   await env.DB.prepare(`UPDATE daily_actions SET status = 'invalid'
     WHERE status = 'pending' AND action_type = 'lost_follower'
@@ -337,6 +342,7 @@ async function generateToday() {
           COALESCE(t.media_count, 0) >= 3
           AND COALESCE(t.following_count, 0) >= 50
           AND COALESCE(t.italian_signal, 0) = 1
+          AND COALESCE(t.female_self_declared, 0) = 1
           AND NOT (COALESCE(t.follower_count, 0) > 10000
             AND CAST(t.following_count AS REAL) / MAX(t.follower_count, 1) < 0.50)
           AND NOT (COALESCE(t.follower_count, 0) > 500
