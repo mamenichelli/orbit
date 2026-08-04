@@ -4,6 +4,7 @@ import argparse
 import getpass
 import json
 import random
+import re
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -56,14 +57,53 @@ def login_for_setup(username: str, password: str, settings_file: Path) -> Client
     return client
 
 
+def web_client_from_session_id(session_id: str, expected_username: str) -> Client:
+    """Create a read-only Instagram Web session without using the mobile API."""
+    user_match = re.match(r"^\d+", session_id)
+    if not user_match or len(session_id) <= 30:
+        raise RuntimeError("Session ID non valido")
+
+    user_id = user_match.group(0)
+    client = Client()
+    client.settings["cookies"] = {
+        "sessionid": session_id,
+        "ds_user_id": user_id,
+    }
+    client.init()
+    # Keep browser sessions cookie-based. A mobile Authorization header is what
+    # makes Instagram reject this otherwise valid web session with HTTP 403.
+    client.authorization_data = {}
+    client.private.headers.pop("Authorization", None)
+    client.public.cookies.set("sessionid", session_id)
+    client.public.cookies.set("ds_user_id", user_id)
+
+    try:
+        profile = client.user_short_gql(user_id, use_cache=False)
+    except Exception as exc:
+        raise RuntimeError(
+            "Instagram non accetta piu questa sessione web. Esci e rientra su "
+            "instagram.com nel browser, poi copia il nuovo cookie sessionid."
+        ) from exc
+
+    logged_username = str(profile.username or "").lower()
+    if logged_username != expected_username.lower():
+        raise RuntimeError(
+            f"La sessione appartiene a @{logged_username}, Orbit attende @{expected_username}"
+        )
+    client.username = logged_username
+    client._orbit_auth_mode = "web"  # type: ignore[attr-defined]
+    client._orbit_user_id = user_id  # type: ignore[attr-defined]
+    return client
+
+
 def login_with_browser(username: str, config_path: Path) -> Client:
+    """Use Edge only to obtain a normal web cookie, then stay on the web API."""
     from playwright.sync_api import sync_playwright
 
-    agent_directory = config_path.parent / ".orbit-agent"
-    browser_profile = agent_directory / "edge-profile"
+    browser_profile = config_path.parent / ".orbit-agent" / "edge-profile"
     browser_profile.mkdir(parents=True, exist_ok=True)
     session_id = ""
-    print("Si apre Microsoft Edge: premi 'Continua con Facebook' e completa l'accesso Instagram.")
+    print("Si apre Microsoft Edge: completa l'accesso Instagram nel browser.")
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
             str(browser_profile),
@@ -86,18 +126,7 @@ def login_with_browser(username: str, config_path: Path) -> Client:
     if not session_id:
         raise RuntimeError("Accesso browser non completato entro 10 minuti")
 
-    client = Client()
-    settings_file = session_path(config_path)
-    if settings_file.exists():
-        settings = client.load_settings(settings_file)
-        if settings:
-            client.set_settings(settings)
-    client.login_by_sessionid(session_id)
-    client.get_timeline_feed()
-    logged_username = str(client.username or "").lower()
-    if logged_username and logged_username != username.lower():
-        raise RuntimeError(f"È stato collegato @{logged_username}, ma Orbit attende @{username}")
-    client.dump_settings(settings_file)
+    client = web_client_from_session_id(session_id, username)
     keyring.set_password(KEYRING_SERVICE, f"{username}:sessionid", session_id)
     return client
 
@@ -106,18 +135,7 @@ def login_with_session_id(username: str, config_path: Path) -> Client:
     session_id = getpass.getpass("Session ID Instagram (input nascosto, resta sul PC): ").strip()
     if not session_id:
         raise RuntimeError("Session ID non inserito")
-    client = Client()
-    settings_file = session_path(config_path)
-    if settings_file.exists():
-        settings = client.load_settings(settings_file)
-        if settings:
-            client.set_settings(settings)
-    client.login_by_sessionid(session_id)
-    client.get_timeline_feed()
-    logged_username = str(client.username or "").lower()
-    if logged_username and logged_username != username.lower():
-        raise RuntimeError(f"La sessione appartiene a @{logged_username}, Orbit attende @{username}")
-    client.dump_settings(settings_file)
+    client = web_client_from_session_id(session_id, username)
     keyring.set_password(KEYRING_SERVICE, f"{username}:sessionid", session_id)
     return client
 
@@ -128,6 +146,9 @@ def login_saved(config: dict[str, str], config_path: Path) -> Client:
     password = keyring.get_password(KEYRING_SERVICE, username)
     if not saved_session_id and not password:
         raise RuntimeError("Credenziale locale assente. Esegui di nuovo agent/setup.ps1.")
+    if saved_session_id:
+        return web_client_from_session_id(saved_session_id, username)
+
     settings_file = session_path(config_path)
     client = Client()
     if settings_file.exists():
@@ -135,16 +156,15 @@ def login_saved(config: dict[str, str], config_path: Path) -> Client:
         if settings:
             client.set_settings(settings)
     try:
-        if saved_session_id:
-            client.login_by_sessionid(saved_session_id)
-        else:
-            client.login(username, password or "")
+        client.login(username, password or "")
         client.get_timeline_feed()
     except (LoginRequired, TwoFactorRequired) as exc:
         raise RuntimeError(
             "Instagram richiede una nuova verifica. Esegui agent/setup.ps1 per rinnovare la sessione."
         ) from exc
     client.dump_settings(settings_file)
+    client._orbit_auth_mode = "mobile"  # type: ignore[attr-defined]
+    client._orbit_user_id = str(client.user_id)  # type: ignore[attr-defined]
     return client
 
 
@@ -197,33 +217,57 @@ def discover_candidates(
     own_following: set[str],
     per_seed: int,
     max_candidates: int,
+    automatic_seeds: list[str],
 ) -> list[dict[str, Any]]:
     raw: dict[str, tuple[Any, str]] = {}
-    try:
-        suggested_payloads = [
-            client.user_suggested_profiles(str(client.user_id)),
-            client.discover_recommended_accounts_for_category_v1(str(client.user_id)),
-        ]
-        for payload in suggested_payloads:
-            for item in payload.get("users", []) or payload.get("items", []):
-                user = item.get("user", item) if isinstance(item, dict) else item
-                username = username_of(user)
-                if username and username not in own_followers and username not in own_following:
-                    raw.setdefault(username, (user, "suggerimenti Instagram"))
-    except Exception as exc:
-        print(f"Suggerimenti Instagram non disponibili: {type(exc).__name__}")
+    web_session = getattr(client, "_orbit_auth_mode", "mobile") == "web"
+    user_id = str(getattr(client, "_orbit_user_id", None) or client.user_id)
+    if not web_session:
+        try:
+            suggested_payloads = [
+                client.user_suggested_profiles(user_id),
+                client.discover_recommended_accounts_for_category_v1(user_id),
+            ]
+            for payload in suggested_payloads:
+                for item in payload.get("users", []) or payload.get("items", []):
+                    user = item.get("user", item) if isinstance(item, dict) else item
+                    username = username_of(user)
+                    if (
+                        username
+                        and username not in own_followers
+                        and username not in own_following
+                    ):
+                        raw.setdefault(username, (user, "suggerimenti Instagram"))
+        except Exception as exc:
+            print(f"Suggerimenti Instagram non disponibili: {type(exc).__name__}")
 
-    for seed in seeds:
+    effective_seeds = list(seeds)
+    if not effective_seeds:
+        # Rotate through accounts already followed and inspect their audiences:
+        # this provides automatic, relevant second-degree discovery.
+        effective_seeds = list(automatic_seeds)
+        random.Random(time.strftime("%Y-%m-%d")).shuffle(effective_seeds)
+        effective_seeds = effective_seeds[:3]
+
+    for seed in effective_seeds:
         if len(raw) >= max_candidates * 3:
             break
         seed = seed.strip().replace("@", "").lower()
         if not seed:
             continue
         try:
-            seed_id = client.user_id_from_username(seed)
-            stream = client.iter_user_followers_v1(
-                str(seed_id), amount=per_seed, page_size=min(100, per_seed), order="date_followed_latest"
-            )
+            if web_session:
+                seed_profile = client.user_info_by_username_v2_gql(seed)
+                seed_id = str(seed_profile.pk)
+                stream = client.user_followers_gql(seed_id, amount=per_seed)
+            else:
+                seed_id = client.user_id_from_username(seed)
+                stream = client.iter_user_followers_v1(
+                    str(seed_id),
+                    amount=per_seed,
+                    page_size=min(100, per_seed),
+                    order="date_followed_latest",
+                )
             for user in stream:
                 username = username_of(user)
                 if (
@@ -242,8 +286,12 @@ def discover_candidates(
         if len(candidates) >= max_candidates:
             break
         try:
-            user_id = str(field_of(short_user, "pk", "") or field_of(short_user, "id", "") or client.user_id_from_username(username))
-            profile = client.user_info(user_id)
+            user_id = str(
+                field_of(short_user, "pk", "")
+                or field_of(short_user, "id", "")
+                or client.user_id_from_username(username)
+            )
+            profile = client.user_info_v2_gql(user_id) if web_session else client.user_info(user_id)
             score, signal = score_candidate(profile)
             candidates.append({
                 "externalId": f"ig:{user_id}",
@@ -283,12 +331,15 @@ def sync(config_path: Path) -> None:
     username = required(config, "ORBIT_INSTAGRAM_USERNAME")
     client = login_saved(config, config_path)
     max_relations = max(0, int(config.get("ORBIT_MAX_RELATIONS", "0") or 0))
-    followers_list, _ = collect_users(
-        client.iter_user_followers_v1(str(client.user_id), amount=max_relations, page_size=200)
-    )
-    following_list, _ = collect_users(
-        client.iter_user_following_v1(str(client.user_id), amount=max_relations, page_size=200)
-    )
+    user_id = str(getattr(client, "_orbit_user_id", None) or client.user_id)
+    if getattr(client, "_orbit_auth_mode", "mobile") == "web":
+        followers_stream = client.user_followers_gql(user_id, amount=max_relations)
+        following_stream = client.user_following_gql(user_id, amount=max_relations)
+    else:
+        followers_stream = client.iter_user_followers_v1(user_id, amount=max_relations, page_size=200)
+        following_stream = client.iter_user_following_v1(user_id, amount=max_relations, page_size=200)
+    followers_list, _ = collect_users(followers_stream)
+    following_list, _ = collect_users(following_stream)
     followers = set(followers_list)
     following = set(following_list)
     seeds = [item.strip() for item in config.get("ORBIT_DISCOVERY_SEEDS", "").split(",") if item.strip()]
@@ -299,6 +350,7 @@ def sync(config_path: Path) -> None:
         following,
         per_seed=max(5, min(100, int(config.get("ORBIT_USERS_PER_SEED", "40") or 40))),
         max_candidates=max(1, min(100, int(config.get("ORBIT_MAX_CANDIDATES", "30") or 30))),
+        automatic_seeds=following_list,
     )
     endpoint = required(config, "ORBIT_DASHBOARD_URL").rstrip("/") + "/api/agent/instagram-sync"
     response = requests.post(

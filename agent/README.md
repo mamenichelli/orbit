@@ -12,11 +12,14 @@ Apri PowerShell nella cartella del progetto ed esegui:
 ```
 
 Puoi aggiungere profili affini con `-Seeds "profilo1,profilo2"`; se li ometti,
-l’agente usa automaticamente i suggerimenti e la categoria del tuo profilo Instagram.
+l’agente seleziona automaticamente account affini tra quelli che già segui e analizza
+il loro pubblico per trovare profili di secondo livello che ancora non segui.
 Apri Instagram nel normale Edge/Chrome già autenticato, premi `F12`, quindi vai in
 **Applicazione → Cookie → https://www.instagram.com** e copia il valore di `sessionid`.
 Incollalo nel prompt nascosto dello script. Non inviarlo in chat: equivale a una password.
-La sessione viene salvata nel Gestore credenziali Windows e non viene inviata a Orbit. Lo script:
+La sessione viene salvata nel Gestore credenziali Windows e non viene inviata a Orbit.
+Viene usata soltanto come sessione web: lo script non tenta di convertirla in un login mobile.
+Lo script:
 
 1. crea un ambiente Python locale;
 2. salva una sessione Instagram sul PC;
