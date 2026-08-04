@@ -2,15 +2,26 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+type Capabilities = {
+  profile?: boolean;
+  media?: boolean;
+  comments: boolean;
+  relationships: boolean;
+  insights: boolean;
+  reauthorizationRecommended?: boolean;
+};
+
 type SocialAccount = {
   id: string;
   platform: "instagram" | "facebook";
   displayName: string;
   username: string | null;
   followers: number | null;
+  followsCount: number | null;
   mediaCount: number | null;
   syncStatus: "live" | "connected";
   connectionType?: "instagram_login" | "facebook_login";
+  capabilities: Capabilities;
   updatedAt: string;
 };
 
@@ -23,46 +34,108 @@ type Candidate = {
   score: number;
   reason: string;
   lastInteraction: string;
+  followsYou: boolean | null;
+  youFollow: boolean | null;
+  verified: boolean | null;
+  followerCount: number | null;
+  profileUrl: string | null;
 };
 
-type Strategy = {
-  key: string;
-  title: string;
-  description: string;
-  ready: boolean;
+type MediaPerformance = {
+  id: string;
+  caption: string;
+  mediaType: string;
+  permalink: string | null;
+  timestamp: string;
+  likeCount: number;
+  commentsCount: number;
+  engagement: number;
 };
+
+type Strategy = { key: string; title: string; description: string; ready: boolean };
 
 type Snapshot = {
   accounts: SocialAccount[];
   opportunities: Candidate[];
+  recentMedia: MediaPerformance[];
   metrics: {
     connectedAccounts: number;
     knownFollowers: number;
     webhookEvents: number;
     analyzedPeople: number;
+    totalInteractions: number;
+    recentReach: number | null;
+    recentViews: number | null;
   };
+  capabilities: Capabilities;
   strategy: Strategy[];
   lastSync: string | null;
+};
+
+type ProtectedProfile = {
+  external_id: string;
+  display_name: string;
+  platform: string;
+  reason: string;
+  created_at: string;
+};
+
+type QueueItem = {
+  external_id: string;
+  action_type: string;
+  status: string;
+  display_name?: string;
+  platform?: string;
+  score?: number;
+  last_interaction?: string;
+  follows_you?: number | null;
+  you_follow?: number | null;
+  created_at: string;
+};
+
+type AuditItem = { id: number; event_type: string; payload: string; created_at: string };
+
+type GrowthState = {
+  protectedProfiles: ProtectedProfile[];
+  queue: QueueItem[];
+  audit: AuditItem[];
+  review: { lastRun: string | null; nextRun: string; dueInDays: number; queued: number };
 };
 
 const nav = ["Panoramica", "Opportunità", "Relazioni", "Contenuti", "Attività"];
 const emptySnapshot: Snapshot = {
   accounts: [],
   opportunities: [],
-  metrics: { connectedAccounts: 0, knownFollowers: 0, webhookEvents: 0, analyzedPeople: 0 },
+  recentMedia: [],
+  metrics: {
+    connectedAccounts: 0,
+    knownFollowers: 0,
+    webhookEvents: 0,
+    analyzedPeople: 0,
+    totalInteractions: 0,
+    recentReach: null,
+    recentViews: null,
+  },
+  capabilities: { comments: false, relationships: false, insights: false },
   strategy: [],
   lastSync: null,
+};
+const emptyGrowth: GrowthState = {
+  protectedProfiles: [],
+  queue: [],
+  audit: [],
+  review: { lastRun: null, nextRun: new Date().toISOString(), dueInDays: 0, queued: 0 },
 };
 
 function initials(value: string) {
   return value.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "OR";
 }
 
-function formatNumber(value: number) {
-  return new Intl.NumberFormat("it-IT").format(value);
+function formatNumber(value: number | null | undefined) {
+  return value == null ? "—" : new Intl.NumberFormat("it-IT").format(value);
 }
 
-function formatDate(value: string | null) {
+function formatDate(value: string | null | undefined) {
   if (!value) return "in attesa dei primi dati";
   return new Intl.DateTimeFormat("it-IT", {
     day: "2-digit",
@@ -72,122 +145,207 @@ function formatDate(value: string | null) {
   }).format(new Date(value));
 }
 
+function activityLabel(type: string) {
+  const labels: Record<string, string> = {
+    automatic_review: "Revisione automatica creata",
+    protect: "Profilo aggiunto agli intoccabili",
+    unprotect: "Profilo rimosso dagli intoccabili",
+    approve: "Interazione aggiunta alle priorità",
+    complete: "Azione completata",
+  };
+  return labels[type] ?? type.replaceAll("_", " ");
+}
+
 export default function Home() {
   const [active, setActive] = useState("Panoramica");
   const [snapshot, setSnapshot] = useState<Snapshot>(emptySnapshot);
-  const [approved, setApproved] = useState<string[]>([]);
-  const [protectedIds, setProtectedIds] = useState<string[]>([]);
+  const [growth, setGrowth] = useState<GrowthState>(emptyGrowth);
   const [showConfig, setShowConfig] = useState(false);
   const [toast, setToast] = useState("");
   const [loading, setLoading] = useState(true);
   const [syncError, setSyncError] = useState("");
 
+  const notify = useCallback((message: string) => {
+    setToast(message);
+    window.setTimeout(() => setToast(""), 2800);
+  }, []);
+
+  const applyGrowthState = useCallback((state: GrowthState) => {
+    setGrowth({
+      protectedProfiles: state.protectedProfiles ?? [],
+      queue: state.queue ?? [],
+      audit: state.audit ?? [],
+      review: state.review ?? emptyGrowth.review,
+    });
+  }, []);
+
   const refresh = useCallback(async (manual = false) => {
     try {
       if (manual) setLoading(true);
       const sessionResponse = await fetch("/api/meta/snapshot", { cache: "no-store" });
-      const sessionText = await sessionResponse.text();
-      let session: { gatewayUrl?: string; accessToken?: string; error?: string };
-      try {
-        session = JSON.parse(sessionText) as typeof session;
-      } catch {
-        throw new Error("Il servizio di sincronizzazione non ha risposto correttamente");
-      }
+      const session = await sessionResponse.json() as { gatewayUrl?: string; accessToken?: string; error?: string };
       if (!sessionResponse.ok || !session.gatewayUrl || !session.accessToken) {
         throw new Error(session.error ?? "Sincronizzazione non disponibile");
       }
-
       const response = await fetch(session.gatewayUrl, {
         headers: { authorization: `Bearer ${session.accessToken}` },
         cache: "no-store",
       });
-      const responseText = await response.text();
-      let body: Snapshot & { error?: string };
-      try {
-        body = JSON.parse(responseText) as typeof body;
-      } catch {
-        throw new Error("Il gateway Meta è temporaneamente lento: riprova tra poco");
-      }
+      const body = await response.json() as Snapshot & { error?: string };
       if (!response.ok) throw new Error(body.error ?? "Sincronizzazione non disponibile");
       setSnapshot(body);
       setSyncError("");
-      if (manual) {
-        setToast("Profili e interazioni aggiornati");
-        window.setTimeout(() => setToast(""), 2600);
-      }
+
+      const growthResponse = await fetch("/api/growth", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          operation: "sync",
+          candidates: body.opportunities.map((candidate) => ({
+            externalId: candidate.externalId,
+            displayName: candidate.name,
+            platform: candidate.platform,
+            score: candidate.score,
+            lastInteraction: candidate.lastInteraction,
+            followsYou: candidate.followsYou,
+            youFollow: candidate.youFollow,
+          })),
+        }),
+      });
+      if (growthResponse.ok) applyGrowthState(await growthResponse.json() as GrowthState);
+      if (manual) notify("Dati, ranking e revisione aggiornati");
     } catch (error) {
       setSyncError(error instanceof Error ? error.message : "Sincronizzazione non disponibile");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [applyGrowthState, notify]);
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => void refresh(), 60_000);
+    const timer = window.setInterval(() => void refresh(), 5 * 60_000);
     return () => window.clearInterval(timer);
   }, [refresh]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get("meta") === "connected") {
-      setToast("Profili Meta collegati. Sincronizzazione avviata.");
-      window.setTimeout(() => setToast(""), 3200);
+    if (params.get("instagram") === "connected" || params.get("meta") === "connected") {
+      notify("Profilo collegato. Analisi automatica avviata.");
       window.history.replaceState({}, "", window.location.pathname);
       void refresh();
     }
-    if (params.get("instagram") === "connected") {
-      setToast("Profilo Instagram professionale collegato direttamente.");
-      window.setTimeout(() => setToast(""), 3200);
+    if (params.get("instagram") === "connection-failed") {
+      notify("Il collegamento Instagram non è stato completato.");
       window.history.replaceState({}, "", window.location.pathname);
-      void refresh();
     }
-  }, [refresh]);
+  }, [notify, refresh]);
 
-  const visibleCandidates = useMemo(
-    () => snapshot.opportunities.filter((candidate) => !approved.includes(candidate.externalId)),
-    [approved, snapshot.opportunities],
+  const protectedIds = useMemo(
+    () => new Set(growth.protectedProfiles.map((profile) => profile.external_id)),
+    [growth.protectedProfiles],
   );
-
+  const approvedIds = useMemo(
+    () => new Set(growth.queue.filter((item) => item.action_type === "priority_interaction" && item.status === "approved").map((item) => item.external_id)),
+    [growth.queue],
+  );
+  const visibleCandidates = snapshot.opportunities.filter((candidate) => !approvedIds.has(candidate.externalId));
   const growthScore = useMemo(() => {
     if (!snapshot.accounts.length) return 0;
-    const dataScore = Math.min(30, snapshot.metrics.webhookEvents * 2);
-    const relationshipScore = Math.min(30, snapshot.metrics.analyzedPeople * 4);
-    const liveScore = snapshot.accounts.some((account) => account.syncStatus === "live") ? 20 : 8;
-    return Math.min(100, 20 + dataScore + relationshipScore + liveScore);
+    const live = snapshot.accounts.some((account) => account.syncStatus === "live") ? 20 : 8;
+    const people = Math.min(30, snapshot.metrics.analyzedPeople * 3);
+    const content = Math.min(20, snapshot.recentMedia.length * 2);
+    const signals = Math.min(20, Math.round(Math.log10(snapshot.metrics.totalInteractions + 1) * 8));
+    return Math.min(100, 10 + live + people + content + signals);
   }, [snapshot]);
 
-  const notify = (message: string) => {
-    setToast(message);
-    window.setTimeout(() => setToast(""), 2600);
-  };
-
-  const persist = async (
-    operation: "protect" | "unprotect" | "approve",
-    candidate: Candidate,
-  ) => {
+  const persist = async (operation: "protect" | "unprotect" | "approve" | "complete", candidate: Candidate | QueueItem) => {
+    const externalId = "externalId" in candidate ? candidate.externalId : candidate.external_id;
+    const displayName = "name" in candidate ? candidate.name : candidate.display_name ?? externalId;
+    const platform = "platform" in candidate ? candidate.platform : candidate.platform ?? "Instagram";
     try {
       const response = await fetch("/api/growth", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          operation,
-          externalId: candidate.externalId,
-          displayName: candidate.name,
-          platform: candidate.platform,
-        }),
+        body: JSON.stringify({ operation, externalId, displayName, platform }),
       });
       if (!response.ok) throw new Error("Salvataggio non riuscito");
+      applyGrowthState(await response.json() as GrowthState);
     } catch {
       notify("Azione non salvata: riprova tra poco");
     }
   };
 
-  const strategies: Strategy[] = snapshot.strategy.length ? snapshot.strategy : [
-    { key: "reciprocity", title: "Reciprocità selettiva", description: "In attesa dei primi segnali Meta.", ready: false },
-    { key: "recency", title: "Finestra di recenza", description: "In attesa dei primi segnali Meta.", ready: false },
-    { key: "consistency", title: "Continuità editoriale", description: "In attesa dei primi segnali Meta.", ready: false },
+  const strategies = snapshot.strategy.length ? snapshot.strategy : [
+    { key: "reciprocity", title: "Reciprocità selettiva", description: "In attesa dei primi segnali Instagram.", ready: false },
+    { key: "recency", title: "Finestra di recenza", description: "In attesa dei primi segnali Instagram.", ready: false },
+    { key: "consistency", title: "Continuità editoriale", description: "In attesa dei primi contenuti.", ready: false },
   ];
+
+  const candidatePanel = (
+    <article className="panel opportunities">
+      <div className="panel-head">
+        <div><p className="eyebrow">PRIORITÀ AUTOMATICHE</p><h2>Persone con cui interagire</h2></div>
+        <span className="live-pill">● LIVE</span>
+      </div>
+      <p className="muted">Ranking calcolato da frequenza, recenza, commenti e relazione reciproca.</p>
+      <div className="candidate-list">
+        {loading && !snapshot.opportunities.length && <div className="all-done">Sto leggendo profilo, contenuti e commenti…</div>}
+        {!loading && !visibleCandidates.length && (
+          <div className="all-done">
+            {snapshot.accounts.length
+              ? "Profilo connesso. Ricollegalo con i permessi estesi oppure attendi i primi commenti sui contenuti."
+              : "Collega Instagram professionale per iniziare."}
+          </div>
+        )}
+        {visibleCandidates.map((candidate, index) => (
+          <div className="candidate" key={`${candidate.platform}-${candidate.externalId}`}>
+            <span className="avatar" style={{ background: ["#ffb1bf", "#ffd989", "#b7d8ff", "#bde8d0"][index % 4] }}>{initials(candidate.name)}</span>
+            <div className="candidate-copy">
+              <strong>
+                {candidate.profileUrl
+                  ? <a href={candidate.profileUrl} target="_blank" rel="noreferrer">{candidate.name}</a>
+                  : candidate.name}
+                <span className="platform">{candidate.platform === "Instagram" ? "◎" : "f"}</span>
+              </strong>
+              <span>{candidate.username ? `@${candidate.username.replace(/^@/, "")}` : candidate.platform}</span>
+              <small>{candidate.reason} · ultima {formatDate(candidate.lastInteraction)}</small>
+            </div>
+            <div className="match"><strong>{candidate.score}%</strong><span>priorità</span></div>
+            <button
+              className={protectedIds.has(candidate.externalId) ? "protect selected" : "protect"}
+              aria-label={protectedIds.has(candidate.externalId) ? "Rimuovi dagli intoccabili" : "Aggiungi agli intoccabili"}
+              onClick={() => {
+                const isProtected = protectedIds.has(candidate.externalId);
+                void persist(isProtected ? "unprotect" : "protect", candidate);
+                notify(isProtected ? "Profilo rimosso dagli intoccabili" : "Profilo aggiunto agli intoccabili");
+              }}
+            >♧</button>
+            <button className="approve" onClick={() => {
+              void persist("approve", candidate);
+              notify(`${candidate.name} aggiunto alla coda prioritaria`);
+            }}>Priorità</button>
+          </div>
+        ))}
+      </div>
+    </article>
+  );
+
+  const accountPanel = (
+    <article className="panel account-panel">
+      <div className="panel-head"><div><p className="eyebrow">PROFILI CONNESSI</p><h2>Account reali</h2></div><button className="text-button" onClick={() => setShowConfig(true)}>Gestisci</button></div>
+      {!snapshot.accounts.length && !loading && <p className="account-empty">Nessun account ricevuto dal gateway.</p>}
+      {snapshot.accounts.map((account) => (
+        <div className="account-row" key={`${account.platform}-${account.id}`}>
+          <span className={`social-icon ${account.platform}`}>{account.platform === "instagram" ? "◎" : "f"}</span>
+          <div>
+            <strong>{account.username ? `@${account.username.replace(/^@/, "")}` : account.displayName}</strong>
+            <small>{account.platform === "instagram" ? "Instagram Creator diretto" : "Pagina Facebook"}{account.followers !== null ? ` · ${formatNumber(account.followers)} follower` : ""}</small>
+          </div>
+          <span className={account.syncStatus === "live" ? "status live" : "status"}>{account.syncStatus === "live" ? "Live" : "Connesso"}</span>
+        </div>
+      ))}
+    </article>
+  );
 
   return (
     <main className="app-shell">
@@ -197,19 +355,14 @@ export default function Home() {
           {nav.map((item, index) => (
             <button key={item} className={active === item ? "nav-item active" : "nav-item"} onClick={() => setActive(item)}>
               <span className="nav-icon">{["⌂", "✦", "♧", "▧", "↗"][index]}</span>{item}
-              {item === "Opportunità" && snapshot.metrics.analyzedPeople > 0 && (
-                <span className="badge">{snapshot.metrics.analyzedPeople}</span>
-              )}
+              {item === "Opportunità" && snapshot.metrics.analyzedPeople > 0 && <span className="badge">{snapshot.metrics.analyzedPeople}</span>}
+              {item === "Relazioni" && growth.review.queued > 0 && <span className="badge">{growth.review.queued}</span>}
             </button>
           ))}
         </nav>
         <div className="sidebar-bottom">
           <button className="nav-item" onClick={() => setShowConfig(true)}><span className="nav-icon">⚙</span>Impostazioni</button>
-          <div className="profile">
-            <span className="avatar mini">MM</span>
-            <div><strong>Marco M.</strong><small>Amministratore</small></div>
-            <span className="more">•••</span>
-          </div>
+          <div className="profile"><span className="avatar mini">MM</span><div><strong>Marco M.</strong><small>Amministratore</small></div><span className="more">•••</span></div>
         </div>
       </aside>
 
@@ -218,10 +371,7 @@ export default function Home() {
           <div>
             <p className="eyebrow">CONTROLLO CRESCITA META</p>
             <h1>{active === "Panoramica" ? "Bentornato, Marco" : active}</h1>
-            <p className="sync-copy">
-              {loading ? "Sincronizzazione…" : `Ultimo aggiornamento: ${formatDate(snapshot.lastSync)}`}
-              {syncError && <span className="sync-error"> · {syncError}</span>}
-            </p>
+            <p className="sync-copy">{loading ? "Sincronizzazione…" : `Ultimo aggiornamento: ${formatDate(snapshot.lastSync)}`}{syncError && <span className="sync-error"> · {syncError}</span>}</p>
           </div>
           <div className="top-actions">
             <button className="icon-button refresh-button" aria-label="Aggiorna dati" onClick={() => void refresh(true)}>↻</button>
@@ -229,131 +379,117 @@ export default function Home() {
           </div>
         </header>
 
-        {active !== "Panoramica" && active !== "Opportunità" ? (
-          <section className="empty-view">
-            <span>✦</span><h2>{active}</h2>
-            <p>I dati collegati alimentano automaticamente questo modulo. Le prossime azioni conformi saranno attivate quando i relativi permessi Meta saranno approvati.</p>
-            <button className="primary" onClick={() => setActive("Panoramica")}>Torna alla panoramica</button>
+        {snapshot.capabilities.reauthorizationRecommended && snapshot.accounts.length > 0 && (
+          <section className="permission-banner">
+            <div><strong>Completa l’automazione Instagram</strong><span>Il login attuale è valido, ma va rinnovato una volta per autorizzare commenti, insight, messaggi e pubblicazione.</span></div>
+            <a href="/api/instagram/connect">Rinnova permessi</a>
           </section>
-        ) : (
+        )}
+
+        {active === "Panoramica" && (
           <>
-            {active === "Panoramica" && (
-              <section className="hero-grid">
-                <article className="growth-card">
-                  <div className="section-heading">
-                    <div><p className="eyebrow">GROWTH SCORE LIVE</p><h2>{snapshot.accounts.length ? "Il motore di analisi è attivo" : "Collega il primo profilo"}</h2></div>
-                    <span className="trend">{snapshot.metrics.connectedAccounts} account</span>
-                  </div>
-                  <div className="score-row">
-                    <div className="score-ring" style={{ background: `conic-gradient(#3b8e70 0 ${growthScore}%,#e7eeeb ${growthScore}%)` }}>
-                      <div><strong>{growthScore}</strong><span>/100</span></div>
-                    </div>
-                    <div className="score-copy">
-                      <p>Il punteggio cresce con dati live, interazioni ricevute e relazioni ricorrenti. Orbit aggiorna l’analisi ogni minuto.</p>
-                      <div className="mini-stats">
-                        <div><span>Follower rilevati</span><strong>{formatNumber(snapshot.metrics.knownFollowers)}</strong><small>dati disponibili via Meta</small></div>
-                        <div><span>Persone analizzate</span><strong>{snapshot.metrics.analyzedPeople}</strong><small>{snapshot.metrics.webhookEvents} eventi ricevuti</small></div>
-                      </div>
+            <section className="hero-grid">
+              <article className="growth-card">
+                <div className="section-heading"><div><p className="eyebrow">GROWTH SCORE LIVE</p><h2>{snapshot.accounts.length ? "Il motore di analisi è attivo" : "Collega il primo profilo"}</h2></div><span className="trend">{snapshot.metrics.connectedAccounts} account</span></div>
+                <div className="score-row">
+                  <div className="score-ring" style={{ background: `conic-gradient(#3b8e70 0 ${growthScore}%,#e7eeeb ${growthScore}%)` }}><div><strong>{growthScore}</strong><span>/100</span></div></div>
+                  <div className="score-copy">
+                    <p>Orbit aggiorna automaticamente dati, contenuti e ranking. Il punteggio cresce quando aumenta la qualità dei segnali reali.</p>
+                    <div className="mini-stats">
+                      <div><span>Follower rilevati</span><strong>{formatNumber(snapshot.metrics.knownFollowers)}</strong><small>dato live Instagram</small></div>
+                      <div><span>Persone analizzate</span><strong>{snapshot.metrics.analyzedPeople}</strong><small>commenti e messaggi</small></div>
+                      <div><span>Interazioni contenuti</span><strong>{formatNumber(snapshot.metrics.totalInteractions)}</strong><small>like + commenti</small></div>
                     </div>
                   </div>
-                </article>
-
-                <article className="review-card">
-                  <div className="calendar-icon"><span>10</span><small>GIORNI</small></div>
-                  <div>
-                    <p className="eyebrow">REVISIONE RELAZIONI</p>
-                    <h2>Scrematura protetta</h2>
-                    <p>Orbit prepara ogni 10 giorni la revisione e non include mai gli account segnati come intoccabili.</p>
-                  </div>
-                  <button className="secondary" onClick={() => setActive("Opportunità")}>Apri le priorità <span>→</span></button>
-                </article>
-              </section>
-            )}
-
-            <section className={active === "Opportunità" ? "workspace-grid opportunities-focus" : "workspace-grid"}>
-              <article className="panel opportunities">
-                <div className="panel-head">
-                  <div><p className="eyebrow">PRIORITÀ AUTOMATICHE</p><h2>Persone con cui interagire</h2></div>
-                  <span className="live-pill">● LIVE</span>
-                </div>
-                <p className="muted">Ordinate per frequenza, recenza e valore dell’interazione ricevuta.</p>
-                <div className="candidate-list">
-                  {loading && !snapshot.opportunities.length && <div className="all-done">Sto leggendo le interazioni Meta…</div>}
-                  {!loading && !visibleCandidates.length && (
-                    <div className="all-done">
-                      {snapshot.accounts.length
-                        ? "Profili connessi. Le persone compariranno qui appena Meta invierà commenti, reazioni o messaggi tramite webhook."
-                        : "Collega Instagram professionale o una Pagina Facebook per iniziare."}
-                    </div>
-                  )}
-                  {visibleCandidates.map((candidate, index) => (
-                    <div className="candidate" key={`${candidate.platform}-${candidate.externalId}`}>
-                      <span className="avatar" style={{ background: ["#ffb1bf", "#ffd989", "#b7d8ff", "#bde8d0"][index % 4] }}>{initials(candidate.name)}</span>
-                      <div className="candidate-copy">
-                        <strong>{candidate.name}<span className="platform">{candidate.platform === "Instagram" ? "◎" : "f"}</span></strong>
-                        <span>{candidate.username ? `@${candidate.username.replace(/^@/, "")}` : candidate.platform}</span>
-                        <small>{candidate.reason} · ultima {formatDate(candidate.lastInteraction)}</small>
-                      </div>
-                      <div className="match"><strong>{candidate.score}%</strong><span>priorità</span></div>
-                      <button
-                        className={protectedIds.includes(candidate.externalId) ? "protect selected" : "protect"}
-                        aria-label="Proteggi profilo"
-                        onClick={() => {
-                          const isProtected = protectedIds.includes(candidate.externalId);
-                          setProtectedIds((ids) => isProtected ? ids.filter((id) => id !== candidate.externalId) : [...ids, candidate.externalId]);
-                          void persist(isProtected ? "unprotect" : "protect", candidate);
-                          notify(isProtected ? "Profilo rimosso dagli intoccabili" : "Profilo aggiunto agli intoccabili");
-                        }}
-                      >♧</button>
-                      <button className="approve" onClick={() => {
-                        setApproved((items) => [...items, candidate.externalId]);
-                        void persist("approve", candidate);
-                        notify(`${candidate.name} aggiunto alla coda prioritaria`);
-                      }}>Priorità</button>
-                    </div>
-                  ))}
                 </div>
               </article>
-
+              <article className="review-card">
+                <div className="calendar-icon"><span>{growth.review.dueInDays}</span><small>GIORNI</small></div>
+                <div><p className="eyebrow">REVISIONE RELAZIONI</p><h2>Scrematura protetta</h2><p>La revisione si rigenera ogni 10 giorni ed esclude sempre gli account intoccabili.</p></div>
+                <button className="secondary" onClick={() => setActive("Relazioni")}>Apri la revisione <span>→</span></button>
+              </article>
+            </section>
+            <section className="workspace-grid">
+              {candidatePanel}
               <aside className="right-stack">
-                <article className="panel account-panel">
-                  <div className="panel-head"><div><p className="eyebrow">PROFILI CONNESSI</p><h2>Account reali</h2></div><button className="text-button" onClick={() => setShowConfig(true)}>Gestisci</button></div>
-                  {!snapshot.accounts.length && !loading && <p className="account-empty">Nessun account ricevuto dal gateway.</p>}
-                  {snapshot.accounts.map((account) => (
-                    <div className="account-row" key={`${account.platform}-${account.id}`}>
-                      <span className={`social-icon ${account.platform}`}>{account.platform === "instagram" ? "◎" : "f"}</span>
-                      <div>
-                        <strong>{account.username ? `@${account.username.replace(/^@/, "")}` : account.displayName}</strong>
-                        <small>{account.platform === "instagram"
-                          ? account.connectionType === "instagram_login" ? "Instagram Creator diretto" : "Instagram professionale"
-                          : "Pagina Facebook"}{account.followers !== null ? ` · ${formatNumber(account.followers)} follower` : ""}</small>
-                      </div>
-                      <span className={account.syncStatus === "live" ? "status live" : "status"}>{account.syncStatus === "live" ? "Live" : "Connesso"}</span>
-                    </div>
-                  ))}
-                </article>
-
+                {accountPanel}
                 <article className="panel activity-panel">
                   <div className="panel-head"><div><p className="eyebrow">MOTORE AUTOMATICO</p><h2>Stato operativo</h2></div></div>
-                  <div className="activity"><span className="activity-mark green">↻</span><p><strong>Sincronizzazione attiva</strong><small>Aggiornamento automatico ogni minuto</small></p><time>live</time></div>
-                  <div className="activity"><span className="activity-mark violet">✦</span><p><strong>Ranking interazioni</strong><small>Recenza, frequenza e qualità dei segnali</small></p><time>{snapshot.metrics.analyzedPeople}</time></div>
-                  <div className="activity"><span className="activity-mark amber">♧</span><p><strong>Lista intoccabili</strong><small>Esclusa da ogni revisione</small></p><time>{protectedIds.length}</time></div>
+                  <div className="activity"><span className="activity-mark green">↻</span><p><strong>Sincronizzazione attiva</strong><small>Aggiornamento ogni 5 minuti</small></p><time>live</time></div>
+                  <div className="activity"><span className="activity-mark violet">✦</span><p><strong>Ranking interazioni</strong><small>Recenza, frequenza e reciprocità</small></p><time>{snapshot.metrics.analyzedPeople}</time></div>
+                  <div className="activity"><span className="activity-mark amber">♧</span><p><strong>Lista intoccabili</strong><small>Esclusa da ogni revisione</small></p><time>{growth.protectedProfiles.length}</time></div>
                 </article>
               </aside>
             </section>
-
             <section className="strategy strategy-live">
               <div><p className="eyebrow">STRATEGIA COMPORTAMENTALE</p><h2>Relazioni che convertono</h2></div>
-              <div className="strategy-cards">
-                {strategies.map((item, index) => (
-                  <div className={item.ready ? "strategy-item ready" : "strategy-item"} key={item.key}>
-                    <span>{index + 1}</span><p><strong>{item.title}</strong><small>{item.description}</small></p>
-                  </div>
-                ))}
-              </div>
-              <p>Orbit privilegia chi mostra interesse reale. Follow, unfollow e like personali non sono eseguibili dalle API ufficiali Meta; la revisione resta una coda guidata e protetta, mentre analisi e priorità sono automatiche.</p>
+              <div className="strategy-cards">{strategies.map((item, index) => <div className={item.ready ? "strategy-item ready" : "strategy-item"} key={item.key}><span>{index + 1}</span><p><strong>{item.title}</strong><small>{item.description}</small></p></div>)}</div>
+              <p>Orbit privilegia chi mostra interesse reale e trasforma i segnali in una lista operativa. Le API Meta non consentono follow, unfollow o like automatici: queste azioni restano guidate per proteggere l’account.</p>
             </section>
           </>
+        )}
+
+        {active === "Opportunità" && <section className="workspace-grid opportunities-focus">{candidatePanel}<aside className="right-stack">{accountPanel}</aside></section>}
+
+        {active === "Relazioni" && (
+          <section className="module-grid">
+            <article className="panel review-queue">
+              <div className="panel-head"><div><p className="eyebrow">REVISIONE OGNI 10 GIORNI</p><h2>Coda relazioni</h2></div><span className="trend">{growth.review.queued} azioni</span></div>
+              <p className="muted">Orbit crea automaticamente la coda e rimuove gli intoccabili. Tu confermi l’azione sul profilo Instagram.</p>
+              {!growth.queue.length && <div className="all-done">Nessuna relazione da revisionare in questo momento.</div>}
+              {growth.queue.slice(0, 30).map((item) => (
+                <div className="queue-row" key={`${item.action_type}-${item.external_id}-${item.created_at}`}>
+                  <span className="avatar">{initials(item.display_name ?? item.external_id)}</span>
+                  <div><strong>{item.display_name ?? item.external_id}</strong><small>{item.action_type === "priority_interaction" ? "Interazione prioritaria" : "Revisione relazione"} · punteggio {item.score ?? 0}</small></div>
+                  <button className="secondary" onClick={() => void persist("complete", item)}>Completa</button>
+                </div>
+              ))}
+            </article>
+            <article className="panel protected-panel">
+              <div className="panel-head"><div><p className="eyebrow">SEMPRE ESCLUSI</p><h2>Intoccabili</h2></div><span className="live-pill">{growth.protectedProfiles.length}</span></div>
+              {!growth.protectedProfiles.length && <p className="account-empty">Premi ♧ accanto a una persona per proteggerla.</p>}
+              {growth.protectedProfiles.map((profile) => (
+                <div className="protected-row" key={profile.external_id}><span className="avatar mini">{initials(profile.display_name)}</span><div><strong>{profile.display_name}</strong><small>{profile.platform} · dal {formatDate(profile.created_at)}</small></div><button className="text-button" onClick={() => void persist("unprotect", { external_id: profile.external_id, display_name: profile.display_name, platform: profile.platform, action_type: "", status: "", created_at: profile.created_at })}>Rimuovi</button></div>
+              ))}
+            </article>
+          </section>
+        )}
+
+        {active === "Contenuti" && (
+          <section className="module-grid content-module">
+            <article className="panel media-panel">
+              <div className="panel-head"><div><p className="eyebrow">PERFORMANCE REALI</p><h2>Contenuti da replicare</h2></div><span className="trend">{snapshot.recentMedia.length} analizzati</span></div>
+              <p className="muted">Ordinati per like + commenti ponderati. I commenti valgono di più perché indicano coinvolgimento attivo.</p>
+              {!snapshot.recentMedia.length && <div className="all-done">Rinnova i permessi Instagram per analizzare i contenuti.</div>}
+              {snapshot.recentMedia.slice(0, 12).map((media, index) => (
+                <div className="media-row" key={media.id}><span className="rank-number">{index + 1}</span><div><strong>{media.caption}</strong><small>{media.mediaType} · {formatDate(media.timestamp)}</small></div><div className="media-stats"><span>♥ {formatNumber(media.likeCount)}</span><span>● {formatNumber(media.commentsCount)}</span></div>{media.permalink && <a href={media.permalink} target="_blank" rel="noreferrer">Apri</a>}</div>
+              ))}
+            </article>
+            <article className="panel playbook-panel">
+              <p className="eyebrow">PIANO DI CRESCITA</p><h2>Schema editoriale</h2>
+              <div className="playbook-step"><span>1</span><div><strong>Hook riconoscibile</strong><small>Apri con un problema specifico o un risultato concreto, senza promesse vaghe.</small></div></div>
+              <div className="playbook-step"><span>2</span><div><strong>Serie ricorrente</strong><small>Trasforma il formato migliore in un appuntamento riconoscibile.</small></div></div>
+              <div className="playbook-step"><span>3</span><div><strong>CTA conversazionale</strong><small>Chiudi con una domanda facile e pertinente per aumentare commenti autentici.</small></div></div>
+              <div className="playbook-step"><span>4</span><div><strong>Risposta rapida</strong><small>Rispondi entro 24 ore e privilegia chi torna più volte.</small></div></div>
+            </article>
+          </section>
+        )}
+
+        {active === "Attività" && (
+          <section className="module-grid">
+            <article className="panel audit-panel">
+              <div className="panel-head"><div><p className="eyebrow">REGISTRO AUTOMATICO</p><h2>Attività recenti</h2></div></div>
+              {!growth.audit.length && <div className="all-done">Le prossime azioni compariranno qui.</div>}
+              {growth.audit.map((item) => <div className="audit-row" key={item.id}><span className="activity-mark green">✓</span><div><strong>{activityLabel(item.event_type)}</strong><small>{formatDate(item.created_at)}</small></div></div>)}
+            </article>
+            <article className="panel capability-panel">
+              <p className="eyebrow">COPERTURA API</p><h2>Dati disponibili</h2>
+              <div className="capability-row"><span>Profilo e follower</span><strong className={snapshot.accounts.some((account) => account.capabilities.profile) ? "ok" : "wait"}>{snapshot.accounts.some((account) => account.capabilities.profile) ? "Attivo" : "In attesa"}</strong></div>
+              <div className="capability-row"><span>Contenuti recenti</span><strong className={snapshot.accounts.some((account) => account.capabilities.media) ? "ok" : "wait"}>{snapshot.accounts.some((account) => account.capabilities.media) ? "Attivo" : "Rinnova"}</strong></div>
+              <div className="capability-row"><span>Commenti e ranking</span><strong className={snapshot.capabilities.comments ? "ok" : "wait"}>{snapshot.capabilities.comments ? "Attivo" : "Rinnova"}</strong></div>
+              <div className="capability-row"><span>Insight account</span><strong className={snapshot.capabilities.insights ? "ok" : "wait"}>{snapshot.capabilities.insights ? "Attivo" : "Rinnova"}</strong></div>
+            </article>
+          </section>
         )}
       </section>
 
@@ -362,10 +498,10 @@ export default function Home() {
           <section className="modal" role="dialog" aria-modal="true" aria-labelledby="config-title">
             <button className="close" onClick={() => setShowConfig(false)} aria-label="Chiudi">×</button>
             <p className="eyebrow">CONFIGURAZIONE</p><h2 id="config-title">Connetti o rinnova i profili</h2>
-            <p className="muted">La connessione avviene tramite Meta OAuth. Orbit non vede né salva la tua password.</p>
-            <a className="connect instagram-button" href="/api/instagram/connect">◎ Connetti il mio Instagram Creator</a>
+            <p className="muted">Ricollega Instagram una volta per autorizzare commenti, insight, messaggi e pubblicazione. Orbit non vede né salva la password.</p>
+            <a className="connect instagram-button" href="/api/instagram/connect">◎ Connetti / rinnova Instagram Creator</a>
             <a className="connect facebook-button" href="/api/meta/connect">f Connetti Pagine Facebook</a>
-            <div className="safety-note"><strong>Automazione conforme</strong><span>Profili, metriche e interazioni si sincronizzano in automatico. Le azioni che Meta non espone vengono trasformate in una coda prioritaria, mai simulate con bot o password.</span></div>
+            <div className="safety-note"><strong>Automazione conforme</strong><span>Analisi, ranking, revisione e priorità sono automatici. Follow, unfollow e like personali non sono disponibili nelle API ufficiali e restano azioni guidate.</span></div>
           </section>
         </div>
       )}

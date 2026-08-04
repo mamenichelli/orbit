@@ -25,6 +25,23 @@ export const auditEvents = sqliteTable("audit_events", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const relationshipCandidates = sqliteTable("relationship_candidates", {
+  externalId: text("external_id").primaryKey(),
+  displayName: text("display_name").notNull(),
+  platform: text("platform").notNull(),
+  score: integer("score").notNull().default(0),
+  lastInteraction: text("last_interaction"),
+  followsYou: integer("follows_you", { mode: "boolean" }),
+  youFollow: integer("you_follow", { mode: "boolean" }),
+  lastSeenAt: text("last_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const reviewState = sqliteTable("review_state", {
+  id: integer("id").primaryKey(),
+  lastRun: text("last_run"),
+  nextRun: text("next_run").notNull(),
+});
+
 export const socialAccounts = sqliteTable("social_accounts", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   platform: text("platform").notNull(),

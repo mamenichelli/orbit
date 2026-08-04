@@ -15,6 +15,13 @@
       "when": 1785415850176,
       "tag": "0001_melted_zuras",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785834524415,
+      "tag": "0002_curvy_banshee",
+      "breakpoints": true
     }
   ]
 }

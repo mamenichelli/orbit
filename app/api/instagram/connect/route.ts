@@ -27,7 +27,16 @@ export async function GET(request: Request) {
   authorize.searchParams.set("client_id", appId);
   authorize.searchParams.set("redirect_uri", redirectUri);
   authorize.searchParams.set("response_type", "code");
-  authorize.searchParams.set("scope", "instagram_business_basic");
+  authorize.searchParams.set(
+    "scope",
+    [
+      "instagram_business_basic",
+      "instagram_business_manage_comments",
+      "instagram_business_manage_messages",
+      "instagram_business_manage_insights",
+      "instagram_business_content_publish",
+    ].join(","),
+  );
   authorize.searchParams.set("state", await signedState());
   authorize.searchParams.set("enable_fb_login", "0");
   authorize.searchParams.set("force_authentication", "1");
