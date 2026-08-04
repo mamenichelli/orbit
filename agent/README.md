@@ -13,7 +13,8 @@ Apri PowerShell nella cartella del progetto ed esegui:
 
 Puoi aggiungere profili affini con `-Seeds "profilo1,profilo2"`; se li ometti,
 l’agente usa automaticamente i suggerimenti e la categoria del tuo profilo Instagram.
-Inserisci la password e l'eventuale codice 2FA quando richiesti. Lo script:
+Microsoft Edge si apre automaticamente: usa **Continua con Facebook** e completa l'accesso.
+La sessione viene salvata localmente; la password non viene chiesta né letta da Orbit. Lo script:
 
 1. crea un ambiente Python locale;
 2. salva una sessione Instagram sul PC;
@@ -28,6 +29,8 @@ Per forzare una sincronizzazione:
 ```powershell
 .\.venv-agent\Scripts\python.exe .\agent\orbit_instagram_agent.py sync --config .\.env.agent
 ```
+
+Per un account con password Instagram autonoma puoi usare `-AuthMode password`.
 
 L'accesso usa API Instagram non ufficiali. Può essere soggetto a challenge o limiti di frequenza;
 se Instagram invalida la sessione, riesegui `setup.ps1`. L'agente non esegue follow, like,

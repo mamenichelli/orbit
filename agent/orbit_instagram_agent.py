@@ -56,10 +56,57 @@ def login_for_setup(username: str, password: str, settings_file: Path) -> Client
     return client
 
 
+def login_with_browser(username: str, config_path: Path) -> Client:
+    from playwright.sync_api import sync_playwright
+
+    agent_directory = config_path.parent / ".orbit-agent"
+    browser_profile = agent_directory / "edge-profile"
+    browser_profile.mkdir(parents=True, exist_ok=True)
+    session_id = ""
+    print("Si apre Microsoft Edge: premi 'Continua con Facebook' e completa l'accesso Instagram.")
+    with sync_playwright() as playwright:
+        context = playwright.chromium.launch_persistent_context(
+            str(browser_profile),
+            channel="msedge",
+            headless=False,
+            no_viewport=True,
+            args=["--start-maximized"],
+        )
+        page = context.pages[0] if context.pages else context.new_page()
+        page.goto("https://www.instagram.com/accounts/login/", wait_until="domcontentloaded")
+        deadline = time.time() + 600
+        while time.time() < deadline:
+            cookies = context.cookies(["https://www.instagram.com"])
+            cookie = next((item for item in cookies if item.get("name") == "sessionid"), None)
+            if cookie and cookie.get("value"):
+                session_id = str(cookie["value"])
+                break
+            page.wait_for_timeout(1000)
+        context.close()
+    if not session_id:
+        raise RuntimeError("Accesso browser non completato entro 10 minuti")
+
+    client = Client()
+    settings_file = session_path(config_path)
+    if settings_file.exists():
+        settings = client.load_settings(settings_file)
+        if settings:
+            client.set_settings(settings)
+    client.login_by_sessionid(session_id)
+    client.get_timeline_feed()
+    logged_username = str(client.username or "").lower()
+    if logged_username and logged_username != username.lower():
+        raise RuntimeError(f"È stato collegato @{logged_username}, ma Orbit attende @{username}")
+    client.dump_settings(settings_file)
+    keyring.set_password(KEYRING_SERVICE, f"{username}:sessionid", session_id)
+    return client
+
+
 def login_saved(config: dict[str, str], config_path: Path) -> Client:
     username = required(config, "ORBIT_INSTAGRAM_USERNAME")
+    saved_session_id = keyring.get_password(KEYRING_SERVICE, f"{username}:sessionid")
     password = keyring.get_password(KEYRING_SERVICE, username)
-    if not password:
+    if not saved_session_id and not password:
         raise RuntimeError("Credenziale locale assente. Esegui di nuovo agent/setup.ps1.")
     settings_file = session_path(config_path)
     client = Client()
@@ -68,7 +115,10 @@ def login_saved(config: dict[str, str], config_path: Path) -> Client:
         if settings:
             client.set_settings(settings)
     try:
-        client.login(username, password)
+        if saved_session_id:
+            client.login_by_sessionid(saved_session_id)
+        else:
+            client.login(username, password or "")
         client.get_timeline_feed()
     except (LoginRequired, TwoFactorRequired) as exc:
         raise RuntimeError(
@@ -189,9 +239,13 @@ def discover_candidates(
     return sorted(candidates, key=lambda item: int(item["score"]), reverse=True)
 
 
-def setup(config_path: Path) -> None:
+def setup(config_path: Path, auth_mode: str) -> None:
     config = load_config(config_path)
     username = required(config, "ORBIT_INSTAGRAM_USERNAME")
+    if auth_mode == "browser":
+        client = login_with_browser(username, config_path)
+        print(f"Sessione browser verificata per @{client.username}.")
+        return
     password = getpass.getpass("Password Instagram (resta nel Gestore credenziali Windows): ")
     if not password:
         raise RuntimeError("Password non inserita")
@@ -246,10 +300,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Agente Instagram read-only per Orbit")
     parser.add_argument("command", choices=("setup", "sync"))
     parser.add_argument("--config", default=".env.agent")
+    parser.add_argument("--auth-mode", choices=("browser", "password"), default="browser")
     args = parser.parse_args()
     config_path = Path(args.config).resolve()
     if args.command == "setup":
-        setup(config_path)
+        setup(config_path, args.auth_mode)
     else:
         sync(config_path)
 

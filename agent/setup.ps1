@@ -2,7 +2,9 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$Username,
   [string]$Seeds = "",
-  [int]$EveryHours = 6
+  [int]$EveryHours = 6,
+  [ValidateSet("browser", "password")]
+  [string]$AuthMode = "browser"
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,8 +43,11 @@ if (-not (Test-Path -LiteralPath $pythonPath)) {
   & $bootstrapPython -m venv $venvPath
 }
 & $pythonPath -m pip install --disable-pip-version-check -r $requirements
-& $pythonPath $agentScript setup --config $configPath
+if ($LASTEXITCODE -ne 0) { throw "Installazione dipendenze non riuscita" }
+& $pythonPath $agentScript setup --config $configPath --auth-mode $AuthMode
+if ($LASTEXITCODE -ne 0) { throw "Accesso Instagram non riuscito: attività automatica non registrata" }
 & $pythonPath $agentScript sync --config $configPath
+if ($LASTEXITCODE -ne 0) { throw "Prima sincronizzazione non riuscita: attività automatica non registrata" }
 
 $taskName = "Orbit Instagram Sync"
 $action = New-ScheduledTaskAction -Execute $pythonPath -Argument "`"$agentScript`" sync --config `"$configPath`"" -WorkingDirectory $projectRoot
