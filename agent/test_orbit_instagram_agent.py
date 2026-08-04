@@ -1,3 +1,5 @@
+import tempfile
+from pathlib import Path
 from unittest import TestCase, mock
 
 from agent import orbit_instagram_agent as orbit
@@ -46,6 +48,18 @@ class _HTTPSession:
 
 
 class InstagramWebSessionTests(TestCase):
+    def test_config_reader_accepts_windows_utf8_bom(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / ".env.agent"
+            path.write_text(
+                "ORBIT_DASHBOARD_URL=https://example.test\nORBIT_AGENT_TOKEN=secret\n",
+                encoding="utf-8-sig",
+            )
+            config = orbit.load_config(path)
+
+        self.assertEqual(config["ORBIT_DASHBOARD_URL"], "https://example.test")
+        self.assertEqual(config["ORBIT_AGENT_TOKEN"], "secret")
+
     def test_session_cookie_is_saved_without_hitting_rate_limited_endpoints(self):
         session_id = "1234567890%3A" + ("x" * 40)
         http = _HTTPSession()

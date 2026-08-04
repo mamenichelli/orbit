@@ -29,12 +29,12 @@ def load_config(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.exists():
         raise RuntimeError(f"Configurazione mancante: {path}")
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        values[key.strip()] = value.strip().strip('"').strip("'")
+        values[key.strip().lstrip("\ufeff")] = value.strip().strip('"').strip("'")
     return values
 
 
@@ -445,8 +445,13 @@ def setup(config_path: Path, auth_mode: str) -> None:
     config = load_config(config_path)
     username = required(config, "ORBIT_INSTAGRAM_USERNAME")
     if auth_mode == "session":
-        client = login_with_session_id(username, config_path)
-        print(f"Sessione locale salvata per @{client.username}; verifica durante la sincronizzazione.")
+        saved_session_id = keyring.get_password(KEYRING_SERVICE, f"{username}:sessionid")
+        if saved_session_id:
+            client = web_client_from_session_id(saved_session_id, username)
+            print(f"Sessione locale gia presente per @{client.username}; sara riutilizzata.")
+        else:
+            client = login_with_session_id(username, config_path)
+            print(f"Sessione locale salvata per @{client.username}; verifica durante la sincronizzazione.")
         return
     if auth_mode == "browser":
         client = login_with_browser(username, config_path)

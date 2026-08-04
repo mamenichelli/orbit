@@ -37,7 +37,8 @@ $orderedKeys = @(
   "ORBIT_DISCOVERY_SEEDS", "ORBIT_USERS_PER_SEED", "ORBIT_MAX_CANDIDATES", "ORBIT_MAX_RELATIONS"
 )
 $lines = foreach ($key in $orderedKeys) { "$key=$($config[$key])" }
-Set-Content -LiteralPath $configPath -Value $lines -Encoding utf8
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllLines($configPath, $lines, $utf8NoBom)
 
 if (-not (Test-Path -LiteralPath $pythonPath)) {
   & $bootstrapPython -m venv $venvPath
