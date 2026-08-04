@@ -45,6 +45,14 @@ def required(config: dict[str, str], key: str) -> str:
     return value
 
 
+def gateway_headers(config: dict[str, str]) -> dict[str, str]:
+    headers = {"Authorization": f"Bearer {required(config, 'ORBIT_AGENT_TOKEN')}"}
+    sites_bypass = config.get("ORBIT_SIWC_BYPASS_TOKEN", "").strip()
+    if sites_bypass:
+        headers["OAI-Sites-Authorization"] = f"Bearer {sites_bypass}"
+    return headers
+
+
 def session_path(config_path: Path) -> Path:
     directory = config_path.parent / ".orbit-agent"
     directory.mkdir(parents=True, exist_ok=True)
@@ -510,7 +518,7 @@ def sync(config_path: Path) -> None:
     endpoint = required(config, "ORBIT_DASHBOARD_URL").rstrip("/") + "/api/agent/instagram-sync"
     response = requests.post(
         endpoint,
-        headers={"Authorization": f"Bearer {required(config, 'ORBIT_AGENT_TOKEN')}"},
+        headers=gateway_headers(config),
         json={
             "username": username,
             "followers": followers_list,

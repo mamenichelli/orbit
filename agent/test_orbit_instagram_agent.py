@@ -48,6 +48,17 @@ class _HTTPSession:
 
 
 class InstagramWebSessionTests(TestCase):
+    def test_gateway_uses_both_agent_and_sites_tokens(self):
+        headers = orbit.gateway_headers(
+            {
+                "ORBIT_AGENT_TOKEN": "agent-secret",
+                "ORBIT_SIWC_BYPASS_TOKEN": "sites-secret",
+            }
+        )
+
+        self.assertEqual(headers["Authorization"], "Bearer agent-secret")
+        self.assertEqual(headers["OAI-Sites-Authorization"], "Bearer sites-secret")
+
     def test_config_reader_accepts_windows_utf8_bom(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / ".env.agent"

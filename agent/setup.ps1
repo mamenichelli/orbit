@@ -34,7 +34,8 @@ $config["ORBIT_INSTAGRAM_USERNAME"] = $Username.Trim().TrimStart("@")
 $config["ORBIT_DISCOVERY_SEEDS"] = $Seeds
 $orderedKeys = @(
   "ORBIT_DASHBOARD_URL", "ORBIT_AGENT_TOKEN", "ORBIT_INSTAGRAM_USERNAME",
-  "ORBIT_DISCOVERY_SEEDS", "ORBIT_USERS_PER_SEED", "ORBIT_MAX_CANDIDATES", "ORBIT_MAX_RELATIONS"
+  "ORBIT_SIWC_BYPASS_TOKEN", "ORBIT_DISCOVERY_SEEDS", "ORBIT_USERS_PER_SEED",
+  "ORBIT_MAX_CANDIDATES", "ORBIT_MAX_RELATIONS"
 )
 $lines = foreach ($key in $orderedKeys) { "$key=$($config[$key])" }
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)

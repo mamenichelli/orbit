@@ -19,6 +19,8 @@ Apri Instagram nel normale Edge/Chrome già autenticato, premi `F12`, quindi vai
 Incollalo nel prompt nascosto dello script. Non inviarlo in chat: equivale a una password.
 La sessione viene salvata nel Gestore credenziali Windows e non viene inviata a Orbit.
 Viene usata soltanto come sessione web: lo script non tenta di convertirla in un login mobile.
+Se il sito usa la protezione "Sign in with ChatGPT", `ORBIT_SIWC_BYPASS_TOKEN` consente
+esclusivamente al task locale di raggiungere il gateway prima della verifica `ORBIT_AGENT_TOKEN`.
 Lo script:
 
 1. crea un ambiente Python locale;
