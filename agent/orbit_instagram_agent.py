@@ -446,7 +446,7 @@ def setup(config_path: Path, auth_mode: str) -> None:
     username = required(config, "ORBIT_INSTAGRAM_USERNAME")
     if auth_mode == "session":
         client = login_with_session_id(username, config_path)
-        print(f"Sessione locale verificata per @{client.username}.")
+        print(f"Sessione locale salvata per @{client.username}; verifica durante la sincronizzazione.")
         return
     if auth_mode == "browser":
         client = login_with_browser(username, config_path)
