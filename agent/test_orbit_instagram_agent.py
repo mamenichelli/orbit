@@ -132,6 +132,55 @@ class InstagramWebSessionTests(TestCase):
 
         self.assertEqual(raised.exception.retry_after, 120)
 
+    def test_web_search_extracts_public_user_results(self):
+        http = _HTTPSession()
+        http.get = mock.Mock(return_value=_Response(
+            {"users": [{"user": {"pk": "99", "username": "candidate.it"}}]},
+            "https://www.instagram.com/web/search/topsearch/",
+        ))
+        client = orbit.InstagramWebSession("1234567890%3A" + ("x" * 40), "test.account", "1234567890")
+        client.http = http
+
+        users = client.search_users("psicologa roma", amount=10)
+
+        self.assertEqual([item["username"] for item in users], ["candidate.it"])
+
+    def test_web_discovery_uses_topic_search_without_opening_followers(self):
+        candidate = {"pk": "99", "username": "candidate"}
+        profile = {
+            "id": "99",
+            "username": "candidate",
+            "full_name": "Candidate",
+            "biography": "Psicologa e mamma italiana a Roma",
+            "follower_count": 800,
+            "following_count": 900,
+            "media_count": 20,
+            "is_private": True,
+            "has_anonymous_profile_picture": False,
+        }
+        client = mock.Mock()
+        client._orbit_auth_mode = "web"
+        client._orbit_user_id = "1234567890"
+        client.user_id = "1234567890"
+        client.search_users.return_value = [candidate]
+        client.profile_by_username.return_value = profile
+
+        with mock.patch.object(orbit.time, "sleep"):
+            result = orbit.discover_candidates(
+                client,
+                seeds=[],
+                own_followers=set(),
+                own_following=set(),
+                per_seed=12,
+                max_candidates=3,
+                automatic_seeds=[],
+                search_queries=["psicologa roma"],
+            )
+
+        self.assertEqual([item["username"] for item in result], ["candidate"])
+        client.search_users.assert_called_once_with("psicologa roma", amount=12)
+        client.relation_users.assert_not_called()
+
     def test_web_discovery_uses_second_degree_profiles(self):
         candidate = {"pk": "99", "username": "candidate"}
         profile = {

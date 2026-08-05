@@ -233,6 +233,8 @@ async function usernamesFromInstagramFile(file: File) {
   return [...usernames];
 }
 
+const LIST_PAGE_SIZE = 20;
+
 export default function Home() {
   const [active, setActive] = useState("Oggi");
   const [snapshot, setSnapshot] = useState<Snapshot>(emptySnapshot);
@@ -248,6 +250,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [syncError, setSyncError] = useState("");
   const [hiddenActionIds, setHiddenActionIds] = useState<Set<number>>(() => new Set());
+  const [listPages, setListPages] = useState<Record<string, number>>({});
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -439,6 +442,23 @@ export default function Home() {
   };
 
   const pendingActions = planner.actions.filter((action) => action.status === "pending" && !hiddenActionIds.has(action.id));
+  const pagination = (key: string, total: number) => {
+    if (total <= LIST_PAGE_SIZE) return null;
+    const pages = Math.ceil(total / LIST_PAGE_SIZE);
+    const current = Math.min(listPages[key] ?? 0, pages - 1);
+    const start = current * LIST_PAGE_SIZE + 1;
+    const end = Math.min(total, start + LIST_PAGE_SIZE - 1);
+    return (
+      <div className="list-pagination" aria-label={`Paginazione ${key}`}>
+        <span>{start}–{end} di {total}</span>
+        <div>
+          <button disabled={current === 0} onClick={() => setListPages((value) => ({ ...value, [key]: Math.max(0, current - 1) }))}>← Precedenti</button>
+          <strong>{current + 1}/{pages}</strong>
+          <button disabled={current >= pages - 1} onClick={() => setListPages((value) => ({ ...value, [key]: Math.min(pages - 1, current + 1) }))}>Successivi →</button>
+        </div>
+      </div>
+    );
+  };
   const dailyActionPanel = (
     title: string,
     eyebrow: string,
@@ -446,11 +466,15 @@ export default function Home() {
     emptyMessage: string,
   ) => {
     const actions = pendingActions.filter((action) => actionTypes.includes(action.action_type));
+    const pageKey = actionTypes.join("-");
+    const pageCount = Math.max(1, Math.ceil(actions.length / LIST_PAGE_SIZE));
+    const page = Math.min(listPages[pageKey] ?? 0, pageCount - 1);
+    const visibleActions = actions.slice(page * LIST_PAGE_SIZE, (page + 1) * LIST_PAGE_SIZE);
     return (
       <article className="panel daily-action-panel">
         <div className="panel-head"><div><p className="eyebrow">{eyebrow}</p><h2>{title}</h2></div><span className="daily-count">{actions.length}</span></div>
         {!actions.length && <div className="daily-empty">{emptyMessage}</div>}
-        {actions.map((action) => (
+        {visibleActions.map((action) => (
           <div className="daily-action" key={action.id}>
             <div className="daily-person">
               <span className="avatar mini">{initials(action.display_name || action.username)}</span>
@@ -464,10 +488,17 @@ export default function Home() {
             </div>
           </div>
         ))}
+        {pagination(pageKey, actions.length)}
       </article>
     );
   };
 
+  const candidatePageCount = Math.max(1, Math.ceil(visibleCandidates.length / LIST_PAGE_SIZE));
+  const candidatePage = Math.min(listPages.candidates ?? 0, candidatePageCount - 1);
+  const pagedCandidates = visibleCandidates.slice(
+    candidatePage * LIST_PAGE_SIZE,
+    (candidatePage + 1) * LIST_PAGE_SIZE,
+  );
   const candidatePanel = (
     <article className="panel opportunities">
       <div className="panel-head">
@@ -484,7 +515,7 @@ export default function Home() {
               : "Collega Instagram professionale per iniziare."}
           </div>
         )}
-        {visibleCandidates.map((candidate, index) => (
+        {pagedCandidates.map((candidate, index) => (
           <div className="candidate" key={`${candidate.platform}-${candidate.externalId}`}>
             <span className="avatar" style={{ background: ["#ffb1bf", "#ffd989", "#b7d8ff", "#bde8d0"][index % 4] }}>{initials(candidate.name)}</span>
             <div className="candidate-copy">
@@ -513,6 +544,7 @@ export default function Home() {
             }}>Priorità</button>
           </div>
         ))}
+        {pagination("candidates", visibleCandidates.length)}
       </div>
     </article>
   );

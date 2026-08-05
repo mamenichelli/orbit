@@ -32,11 +32,16 @@ foreach ($line in Get-Content -LiteralPath $configPath) {
 }
 $config["ORBIT_INSTAGRAM_USERNAME"] = $Username.Trim().TrimStart("@")
 $config["ORBIT_DISCOVERY_SEEDS"] = $Seeds
+$config["ORBIT_DISCOVERY_QUERIES"] = if ($config["ORBIT_DISCOVERY_QUERIES"]) {
+  $config["ORBIT_DISCOVERY_QUERIES"]
+} else {
+  "psicologa roma,psicologa milano,benessere mentale italia,biohacking italiana,neuroscienze italia,intelligenza artificiale italia"
+}
 $config["ORBIT_USERS_PER_SEED"] = "12"
 $config["ORBIT_MAX_CANDIDATES"] = "3"
 $orderedKeys = @(
   "ORBIT_DASHBOARD_URL", "ORBIT_AGENT_TOKEN", "ORBIT_INSTAGRAM_USERNAME",
-  "ORBIT_SIWC_BYPASS_TOKEN", "ORBIT_DISCOVERY_SEEDS", "ORBIT_USERS_PER_SEED",
+  "ORBIT_SIWC_BYPASS_TOKEN", "ORBIT_DISCOVERY_SEEDS", "ORBIT_DISCOVERY_QUERIES", "ORBIT_USERS_PER_SEED",
   "ORBIT_MAX_CANDIDATES", "ORBIT_MAX_RELATIONS"
 )
 $lines = foreach ($key in $orderedKeys) { "$key=$($config[$key])" }

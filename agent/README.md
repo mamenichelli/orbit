@@ -11,9 +11,9 @@ Apri PowerShell nella cartella del progetto ed esegui:
 .\agent\setup.ps1 -Username TUO_USERNAME -AuthMode session
 ```
 
-Puoi aggiungere profili affini con `-Seeds "profilo1,profilo2"`; se li ometti,
-l’agente seleziona automaticamente account affini tra quelli che già segui e analizza
-il loro pubblico per trovare profili di secondo livello che ancora non segui.
+La ricerca automatica ruota sugli argomenti affini italiani configurati in
+`ORBIT_DISCOVERY_QUERIES`. I profili indicati con `-Seeds` restano disponibili come
+riferimenti manuali, ma non sono necessari per alimentare la lista.
 Apri Instagram nel normale Edge/Chrome già autenticato, premi `F12`, quindi vai in
 **Applicazione → Cookie → https://www.instagram.com** e copia il valore di `sessionid`.
 Incollalo nel prompt nascosto dello script. Non inviarlo in chat: equivale a una password.
@@ -27,8 +27,8 @@ Lo script:
 2. salva una sessione Instagram sul PC;
 3. scarica follower e seguiti;
 4. esclude follower attuali e persone già seguite;
-5. salva localmente le relazioni e analizza un solo pubblico affine alla volta, aprendo pochi profili per non superare i limiti Instagram;
-6. mantiene solo donne con segnali pubblici italiani e identità femminile dichiarata nella bio, scartando account vuoti, inattivi o sproporzionati;
+5. salva localmente le relazioni e ruota su una ricerca affine italiana alla volta, aprendo pochi profili per non superare i limiti Instagram;
+6. mantiene profili con segnali pubblici italiani, dà priorità alle donne dichiarate nella bio ed esclude uomini dichiarati, account vuoti, inattivi o sproporzionati;
 7. invia alla dashboard la lista ordinata;
 8. registra `Orbit Instagram Sync` ogni 6 ore e `Orbit Instagram Discovery` ogni 30 minuti; se Instagram limita le richieste, riparte automaticamente all'orario indicato senza cancellare le candidate già verificate.
 

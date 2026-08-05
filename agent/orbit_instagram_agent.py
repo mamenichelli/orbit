@@ -192,6 +192,25 @@ class InstagramWebSession:
             raise RuntimeError(f"Profilo Instagram @{normalized} non trovato")
         return user
 
+    def search_users(self, query: str, amount: int = 20) -> list[dict[str, Any]]:
+        payload = self._json_get(
+            "/web/search/topsearch/",
+            {
+                "context": "blended",
+                "query": query.strip(),
+                "include_reel": "true",
+            },
+            f"https://www.instagram.com/explore/search/keyword/?q={query.strip()}",
+        )
+        users: list[dict[str, Any]] = []
+        for item in payload.get("users") or []:
+            user = item.get("user", item) if isinstance(item, dict) else None
+            if isinstance(user, dict) and username_of(user):
+                users.append(user)
+            if len(users) >= amount:
+                break
+        return users
+
     def relation_users(self, user_id: str, relation: str, amount: int = 0) -> list[dict[str, Any]]:
         if relation not in {"followers", "following"}:
             raise ValueError("Relazione Instagram non valida")
@@ -539,10 +558,26 @@ def discover_candidates(
     per_seed: int,
     max_candidates: int,
     automatic_seeds: list[Any],
+    search_queries: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     raw: dict[str, tuple[Any, str]] = {}
     web_session = getattr(client, "_orbit_auth_mode", "mobile") == "web"
     user_id = str(getattr(client, "_orbit_user_id", None) or client.user_id)
+    for query in search_queries or []:
+        try:
+            for user in client.search_users(query, amount=per_seed):
+                username = username_of(user)
+                if (
+                    username
+                    and username not in own_followers
+                    and username not in own_following
+                ):
+                    raw.setdefault(username, (user, f"ricerca {query}"))
+        except InstagramRateLimited:
+            raise
+        except Exception as exc:
+            print(f"Ricerca '{query}' saltata: {type(exc).__name__}")
+
     if not web_session:
         try:
             suggested_payloads = [
@@ -563,7 +598,7 @@ def discover_candidates(
             print(f"Suggerimenti Instagram non disponibili: {type(exc).__name__}")
 
     effective_seeds: list[Any] = list(seeds)
-    if not effective_seeds:
+    if not effective_seeds and not search_queries:
         # Rotate through accounts already followed and inspect their audiences:
         # this provides automatic, relevant second-degree discovery.
         effective_seeds = list(automatic_seeds)
@@ -748,22 +783,24 @@ def discover(config_path: Path) -> None:
     cached = load_relation_cache(config_path)
     followers_list = [str(item).lower() for item in cached.get("followers", []) if str(item).strip()]
     following_list = [str(item).lower() for item in cached.get("following", []) if str(item).strip()]
-    configured_seeds: list[Any] = [
-        item.strip() for item in config.get("ORBIT_DISCOVERY_SEEDS", "").split(",") if item.strip()
+    search_queries = [
+        item.strip() for item in config.get(
+            "ORBIT_DISCOVERY_QUERIES",
+            "psicologa roma,psicologa milano,benessere mentale italia,biohacking italiana,"
+            "neuroscienze italia,intelligenza artificiale italia",
+        ).split(",") if item.strip()
     ]
-    seed_pool = configured_seeds or [
-        item for item in cached.get("automaticSeeds", []) if isinstance(item, dict)
-    ]
-    selected_seed = next_discovery_seed(config_path, seed_pool)
+    selected_query = str(next_discovery_seed(config_path, search_queries))
     try:
         candidates = discover_candidates(
             client,
-            [selected_seed],
+            [],
             set(followers_list),
             set(following_list),
             per_seed=max(5, min(20, int(config.get("ORBIT_USERS_PER_SEED", "12") or 12))),
             max_candidates=max(1, min(5, int(config.get("ORBIT_MAX_CANDIDATES", "3") or 3))),
             automatic_seeds=[],
+            search_queries=[selected_query],
         )
     except InstagramRateLimited as exc:
         retry_at = record_rate_limit(config_path, exc.retry_after)
@@ -779,7 +816,7 @@ def discover(config_path: Path) -> None:
         "completed",
         candidatesFound=len(candidates),
         candidatesAccepted=int(result.get("candidates", 0) or 0),
-        seed=username_of(selected_seed) if not isinstance(selected_seed, str) else selected_seed,
+        seed=f"ricerca:{selected_query}",
     )
     print(
         f"Ricerca graduale completata: {result['candidates']} nuove candidate verificate. "
