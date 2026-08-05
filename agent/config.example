@@ -6,4 +6,5 @@ ORBIT_DISCOVERY_SEEDS=
 ORBIT_DISCOVERY_QUERIES=psicologa roma,psicologa milano,benessere mentale italia,biohacking italiana,neuroscienze italia,intelligenza artificiale italia
 ORBIT_USERS_PER_SEED=12
 ORBIT_MAX_CANDIDATES=3
+ORBIT_BROWSER_PROFILE_CHECKS=20
 ORBIT_MAX_RELATIONS=0

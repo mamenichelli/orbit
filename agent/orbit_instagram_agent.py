@@ -8,6 +8,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import quote_plus
 
 import keyring
 import requests
@@ -550,6 +551,196 @@ def score_candidate(profile: Any) -> tuple[int, str, dict[str, Any]] | None:
     }
 
 
+def parse_compact_count(value: str) -> int:
+    """Parse Instagram counters such as 1.693, 1,2 mila, 3.4K or 2M."""
+    cleaned = re.sub(r"\s+", "", str(value or "").strip().lower())
+    multiplier = 1
+    for suffix, factor in (("mila", 1_000), ("mio", 1_000_000), ("mln", 1_000_000), ("k", 1_000), ("m", 1_000_000)):
+        if cleaned.endswith(suffix):
+            cleaned = cleaned[: -len(suffix)]
+            multiplier = factor
+            break
+    if multiplier > 1:
+        normalized = cleaned.replace(".", "").replace(",", ".") if cleaned.count(",") == 1 else cleaned.replace(",", "")
+        try:
+            return max(0, int(float(normalized) * multiplier))
+        except ValueError:
+            return 0
+    if re.fullmatch(r"\d{1,3}([.,]\d{3})+", cleaned):
+        cleaned = cleaned.replace(".", "").replace(",", "")
+    else:
+        cleaned = cleaned.replace(",", "").replace(".", "")
+    try:
+        return max(0, int(cleaned))
+    except ValueError:
+        return 0
+
+
+def browser_profile_payload(description: str, header_text: str, title: str = "") -> dict[str, Any]:
+    """Convert public profile text into the same shape used by score_candidate."""
+    combined = " ".join(part.strip() for part in (description, header_text) if part and part.strip())
+
+    def metric(labels: str) -> int:
+        match = re.search(
+            rf"([\d.,]+\s*(?:mila|mio|mln|[km])?)\s+(?:{labels})\b",
+            combined,
+            re.I,
+        )
+        return parse_compact_count(match.group(1)) if match else 0
+
+    private_text = combined.lower()
+    display_name = re.sub(r"\s*\(@[^)]+\).*$", "", title).strip() or "Instagram"
+    return {
+        "full_name": display_name,
+        "biography": combined,
+        "follower_count": metric(r"followers?|follower"),
+        "following_count": metric(r"following|seguiti|profili\s+seguiti"),
+        "media_count": metric(r"posts?|post"),
+        "is_private": "account is private" in private_text or "account è privato" in private_text,
+        "has_anonymous_profile_picture": False,
+    }
+
+
+def discover_candidates_with_browser(
+    config_path: Path,
+    query: str,
+    own_followers: set[str],
+    own_following: set[str],
+    max_candidates: int,
+    max_profile_checks: int = 20,
+) -> list[dict[str, Any]]:
+    """Use the authenticated Instagram UI when private JSON search is throttled."""
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+    from playwright.sync_api import sync_playwright
+
+    browser_profile = config_path.parent / ".orbit-agent" / "edge-profile"
+    if not browser_profile.exists():
+        raise RuntimeError("Profilo browser Instagram assente; esegui setup.ps1 -AuthMode browser")
+
+    ignored_routes = {
+        "accounts", "about", "api", "developer", "direct", "directory", "emails",
+        "explore", "legal", "privacy", "reels", "stories", "terms", "web",
+    }
+    discovered: list[str] = []
+    candidates: list[dict[str, Any]] = []
+    checked_profiles = 0
+    profiles_without_metrics = 0
+    profiles_rejected = 0
+    config = load_config(config_path)
+    configured_username = required(config, "ORBIT_INSTAGRAM_USERNAME")
+    saved_session_id = keyring.get_password(KEYRING_SERVICE, f"{configured_username}:sessionid")
+    with sync_playwright() as playwright:
+        context = playwright.chromium.launch_persistent_context(
+            str(browser_profile),
+            channel="msedge",
+            headless=True,
+            locale="it-IT",
+            viewport={"width": 1440, "height": 1000},
+        )
+        if saved_session_id:
+            user_match = re.match(r"^\d+", saved_session_id)
+            cookies = [{
+                "name": "sessionid",
+                "value": saved_session_id,
+                "domain": ".instagram.com",
+                "path": "/",
+                "secure": True,
+                "httpOnly": True,
+                "sameSite": "Lax",
+            }]
+            if user_match:
+                cookies.append({
+                    "name": "ds_user_id",
+                    "value": user_match.group(0),
+                    "domain": ".instagram.com",
+                    "path": "/",
+                    "secure": True,
+                    "httpOnly": False,
+                    "sameSite": "Lax",
+                })
+            context.add_cookies(cookies)
+        page = context.pages[0] if context.pages else context.new_page()
+        try:
+            sources = [
+                f"https://www.instagram.com/explore/search/keyword/?q={quote_plus(query)}",
+                "https://www.instagram.com/explore/people/suggested/",
+            ]
+            for source in sources:
+                try:
+                    page.goto(source, wait_until="domcontentloaded", timeout=45_000)
+                    page.wait_for_timeout(3_500)
+                    if "/accounts/login" in page.url:
+                        raise RuntimeError("Sessione browser Instagram scaduta")
+                    paths = page.locator('a[href^="/"]').evaluate_all(
+                        "elements => elements.map(element => element.getAttribute('href') || '')",
+                    )
+                    for path in paths:
+                        username = str(path).strip("/").split("/", 1)[0].lower()
+                        if (
+                            re.fullmatch(r"[a-z0-9._]{1,30}", username)
+                            and username not in ignored_routes
+                            and username not in own_followers
+                            and username not in own_following
+                            and username not in discovered
+                        ):
+                            discovered.append(username)
+                except PlaywrightTimeoutError:
+                    continue
+                if len(discovered) >= max_profile_checks:
+                    break
+
+            for username in discovered[:max_profile_checks]:
+                if len(candidates) >= max_candidates:
+                    break
+                try:
+                    page.goto(
+                        f"https://www.instagram.com/{username}/",
+                        wait_until="domcontentloaded",
+                        timeout=35_000,
+                    )
+                    page.wait_for_timeout(1_800)
+                    if "/accounts/login" in page.url:
+                        raise RuntimeError("Sessione browser Instagram scaduta")
+                    description = page.locator('meta[property="og:description"]').get_attribute("content") or ""
+                    title = page.locator('meta[property="og:title"]').get_attribute("content") or ""
+                    header = page.locator("header").inner_text(timeout=5_000)
+                    profile = browser_profile_payload(description, header, title)
+                    profile["username"] = username
+                    checked_profiles += 1
+                    if not profile["follower_count"] or not profile["following_count"] or not profile["media_count"]:
+                        profiles_without_metrics += 1
+                    scored = score_candidate(profile)
+                    if scored is None:
+                        profiles_rejected += 1
+                        continue
+                    score, signal, metrics = scored
+                    candidates.append({
+                        "externalId": f"ig:browser:{username}",
+                        "username": username,
+                        "displayName": str(profile.get("full_name") or username),
+                        "sourceDetail": f"Esplora Instagram: {query}; {signal}",
+                        "reason": signal,
+                        "score": score,
+                        **metrics,
+                    })
+                except PlaywrightTimeoutError:
+                    continue
+        finally:
+            context.close()
+
+    print(
+        "Diagnostica browser: "
+        f"{len(discovered)} profili scoperti, {checked_profiles} controllati, "
+        f"{profiles_without_metrics} senza metriche leggibili, {profiles_rejected} esclusi dai filtri."
+    )
+
+    return sorted(
+        candidates,
+        key=lambda item: (bool(item.get("femaleSelfDeclared")), int(item["score"])),
+        reverse=True,
+    )
+
+
 def discover_candidates(
     client: Any,
     seeds: list[Any],
@@ -771,15 +962,7 @@ def sync(config_path: Path) -> None:
 
 def discover(config_path: Path) -> None:
     """Inspect one audience and a few profiles, preserving verified server candidates."""
-    retry_at = cooldown_retry_at(config_path)
-    if retry_at > int(time.time()):
-        retry_time = time.strftime("%d/%m/%Y %H:%M", time.localtime(retry_at))
-        save_discovery_result(config_path, "cooldown", retryAt=retry_at)
-        print(f"Limite Instagram ancora attivo; prossimo tentativo automatico dopo le {retry_time}.")
-        return
-
     config = load_config(config_path)
-    client = login_saved(config, config_path)
     cached = load_relation_cache(config_path)
     followers_list = [str(item).lower() for item in cached.get("followers", []) if str(item).strip()]
     following_list = [str(item).lower() for item in cached.get("following", []) if str(item).strip()]
@@ -791,6 +974,58 @@ def discover(config_path: Path) -> None:
         ).split(",") if item.strip()
     ]
     selected_query = str(next_discovery_seed(config_path, search_queries))
+    max_candidates = max(1, min(5, int(config.get("ORBIT_MAX_CANDIDATES", "3") or 3)))
+
+    def browser_fallback(reason: str) -> bool:
+        try:
+            browser_candidates = discover_candidates_with_browser(
+                config_path,
+                selected_query,
+                set(followers_list),
+                set(following_list),
+                max_candidates=max_candidates,
+                max_profile_checks=max(
+                    8,
+                    min(30, int(config.get("ORBIT_BROWSER_PROFILE_CHECKS", "20") or 20)),
+                ),
+            )
+        except Exception as exc:
+            error_message = re.sub(r"\s+", " ", str(exc)).strip()[:300]
+            save_discovery_result(
+                config_path,
+                "browser_fallback_failed",
+                reason=reason,
+                error=type(exc).__name__,
+                errorMessage=error_message,
+                seed=f"ricerca:{selected_query}",
+            )
+            print(f"Ricerca browser non disponibile: {type(exc).__name__}: {error_message}")
+            return False
+        result = send_snapshot(config, followers_list, following_list, browser_candidates)
+        save_discovery_result(
+            config_path,
+            "completed_browser",
+            reason=reason,
+            candidatesFound=len(browser_candidates),
+            candidatesAccepted=int(result.get("candidates", 0) or 0),
+            seed=f"ricerca:{selected_query}",
+        )
+        print(
+            f"Ricerca browser completata: {result['candidates']} nuove candidate verificate. "
+            "I profili gia seguiti o non italiani sono stati esclusi."
+        )
+        return True
+
+    retry_at = cooldown_retry_at(config_path)
+    if retry_at > int(time.time()):
+        if browser_fallback("api_cooldown"):
+            return
+        retry_time = time.strftime("%d/%m/%Y %H:%M", time.localtime(retry_at))
+        save_discovery_result(config_path, "cooldown", retryAt=retry_at)
+        print(f"Limite Instagram ancora attivo; prossimo tentativo automatico dopo le {retry_time}.")
+        return
+
+    client = login_saved(config, config_path)
     try:
         candidates = discover_candidates(
             client,
@@ -798,15 +1033,21 @@ def discover(config_path: Path) -> None:
             set(followers_list),
             set(following_list),
             per_seed=max(5, min(20, int(config.get("ORBIT_USERS_PER_SEED", "12") or 12))),
-            max_candidates=max(1, min(5, int(config.get("ORBIT_MAX_CANDIDATES", "3") or 3))),
+            max_candidates=max_candidates,
             automatic_seeds=[],
             search_queries=[selected_query],
         )
     except InstagramRateLimited as exc:
         retry_at = record_rate_limit(config_path, exc.retry_after)
+        if browser_fallback("api_rate_limited"):
+            return
         retry_time = time.strftime("%d/%m/%Y %H:%M", time.localtime(retry_at))
         save_discovery_result(config_path, "rate_limited", retryAt=retry_at)
         print(f"Ricerca graduale rinviata; nuovo tentativo automatico dopo le {retry_time}.")
+        return
+
+    if not candidates and browser_fallback("api_zero_candidates"):
+        cooldown_path(config_path).unlink(missing_ok=True)
         return
 
     result = send_snapshot(config, followers_list, following_list, candidates)

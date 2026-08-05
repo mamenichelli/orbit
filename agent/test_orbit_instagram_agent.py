@@ -49,6 +49,28 @@ class _HTTPSession:
 
 
 class InstagramWebSessionTests(TestCase):
+    def test_compact_instagram_counts_are_parsed(self):
+        self.assertEqual(orbit.parse_compact_count("1.693"), 1_693)
+        self.assertEqual(orbit.parse_compact_count("1,2 mila"), 1_200)
+        self.assertEqual(orbit.parse_compact_count("3.4K"), 3_400)
+
+    def test_browser_profile_text_builds_scoring_payload(self):
+        profile = orbit.browser_profile_payload(
+            "850 follower, 1.100 profili seguiti, 24 post - Foto di Giulia",
+            "Giulia\nMamma italiana a Roma, benessere e viaggi\nQuesto account è privato",
+            "Giulia (@giulia.roma) • Instagram photos and videos",
+        )
+
+        scored = orbit.score_candidate(profile)
+
+        self.assertEqual(profile["follower_count"], 850)
+        self.assertEqual(profile["following_count"], 1_100)
+        self.assertEqual(profile["media_count"], 24)
+        self.assertTrue(profile["is_private"])
+        self.assertIsNotNone(scored)
+        assert scored is not None
+        self.assertTrue(scored[2]["femaleSelfDeclared"])
+
     def test_gateway_uses_both_agent_and_sites_tokens(self):
         headers = orbit.gateway_headers(
             {
@@ -97,8 +119,13 @@ class InstagramWebSessionTests(TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / ".env.agent"
             config_path.write_text("ORBIT_INSTAGRAM_USERNAME=test.account\n", encoding="utf-8")
+            orbit.save_relation_cache(config_path, ["follower"], ["following"], {})
             orbit.record_rate_limit(config_path, 600)
-            with mock.patch.object(orbit, "login_saved") as login_saved:
+            with mock.patch.object(orbit, "login_saved") as login_saved, mock.patch.object(
+                orbit,
+                "discover_candidates_with_browser",
+                side_effect=RuntimeError("browser unavailable"),
+            ):
                 orbit.discover(config_path)
 
         login_saved.assert_not_called()
