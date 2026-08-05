@@ -111,18 +111,26 @@ async function ensureSchema() {
       completed_at TEXT,
       UNIQUE(action_date, external_id, action_type)
     )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS planner_exclusions (
+      external_id TEXT NOT NULL,
+      action_kind TEXT NOT NULL,
+      reason TEXT NOT NULL DEFAULT 'saltato dall’utente',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (external_id, action_kind)
+    )`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS planner_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       follows_per_day INTEGER NOT NULL DEFAULT 12,
       comments_per_day INTEGER NOT NULL DEFAULT 0,
-      unfollows_per_day INTEGER NOT NULL DEFAULT 8,
+      unfollows_per_day INTEGER NOT NULL DEFAULT 1000,
       review_days INTEGER NOT NULL DEFAULT 10,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
     env.DB.prepare(`INSERT INTO planner_settings
       (id, follows_per_day, comments_per_day, unfollows_per_day, review_days)
-      VALUES (1, 12, 0, 8, 10) ON CONFLICT(id) DO NOTHING`),
+      VALUES (1, 12, 0, 1000, 10) ON CONFLICT(id) DO NOTHING`),
     env.DB.prepare("UPDATE planner_settings SET comments_per_day = 0 WHERE id = 1"),
+    env.DB.prepare("UPDATE planner_settings SET unfollows_per_day = 1000 WHERE unfollows_per_day = 8"),
   ]);
 }
 
@@ -131,7 +139,7 @@ async function readSettings() {
     FROM planner_settings WHERE id = 1`).first<Settings>() ?? {
     follows_per_day: 12,
     comments_per_day: 0,
-    unfollows_per_day: 8,
+    unfollows_per_day: 1000,
     review_days: 10,
   };
 }
@@ -299,12 +307,17 @@ async function generateToday() {
               (t.source = 'organic_interaction' OR t.source LIKE 'open_source_%')
               AND COALESCE(t.italian_signal, 0) <> 1
             )
-            OR (
-              t.source LIKE 'open_source_%'
-              AND COALESCE(t.female_self_declared, 0) <> 1
+            OR EXISTS (
+              SELECT 1 FROM planner_exclusions x
+              WHERE x.external_id = daily_actions.external_id AND x.action_kind = 'follow'
             )
           )
       )`).bind(date).run();
+  await env.DB.prepare(`INSERT OR IGNORE INTO protected_profiles
+    (external_id, display_name, platform, reason)
+    SELECT t.external_id, t.display_name, t.platform, 'Saltato dalla scrematura: non riproporre'
+    FROM daily_actions a JOIN growth_targets t ON t.external_id = a.external_id
+    WHERE a.action_type = 'unfollow' AND a.status = 'skipped'`).run();
   await env.DB.prepare(`UPDATE daily_actions SET status = 'invalid'
     WHERE status = 'pending' AND action_type = 'lost_follower'
       AND EXISTS (
@@ -342,7 +355,6 @@ async function generateToday() {
           COALESCE(t.media_count, 0) >= 3
           AND COALESCE(t.following_count, 0) >= 50
           AND COALESCE(t.italian_signal, 0) = 1
-          AND COALESCE(t.female_self_declared, 0) = 1
           AND NOT (COALESCE(t.follower_count, 0) > 10000
             AND CAST(t.following_count AS REAL) / MAX(t.follower_count, 1) < 0.50)
           AND NOT (COALESCE(t.follower_count, 0) > 500
@@ -354,6 +366,10 @@ async function generateToday() {
         WHERE old.external_id = t.external_id
           AND old.action_type IN ('follow', 'follow_back')
           AND old.status = 'completed'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM planner_exclusions x
+        WHERE x.external_id = t.external_id AND x.action_kind = 'follow'
       )
     ORDER BY
       (t.interactions > 0) DESC,
@@ -387,7 +403,7 @@ async function generateToday() {
         SELECT 1 FROM daily_actions old
         WHERE old.external_id = t.external_id
           AND old.action_type = 'lost_follower'
-          AND old.status = 'completed'
+          AND old.status IN ('completed', 'skipped')
           AND datetime(old.completed_at) >= datetime(t.unfollowed_you_at)
       )
     ORDER BY t.unfollowed_you_at DESC
@@ -409,6 +425,35 @@ async function completeAction(id: number) {
   } else if (action.action_type === "unfollow") {
     await env.DB.prepare(`UPDATE growth_targets SET you_follow = 0, followed_at = NULL,
       review_after = NULL, updated_at = CURRENT_TIMESTAMP WHERE external_id = ?`)
+      .bind(action.external_id).run();
+  }
+}
+
+async function skipAction(id: number) {
+  const action = await env.DB.prepare(`SELECT a.id, a.external_id, a.action_type,
+      t.display_name, t.platform
+    FROM daily_actions a JOIN growth_targets t ON t.external_id = a.external_id
+    WHERE a.id = ?`).bind(id).first<{
+      id: number;
+      external_id: string;
+      action_type: string;
+      display_name: string;
+      platform: string;
+    }>();
+  if (!action) throw new Error("Azione non trovata");
+
+  await env.DB.prepare(`UPDATE daily_actions SET status = 'skipped', completed_at = CURRENT_TIMESTAMP
+    WHERE id = ?`).bind(id).run();
+  if (action.action_type === "unfollow") {
+    await env.DB.prepare(`INSERT INTO protected_profiles
+      (external_id, display_name, platform, reason)
+      VALUES (?, ?, ?, 'Saltato dalla scrematura: non riproporre')
+      ON CONFLICT(external_id) DO UPDATE SET reason = excluded.reason`)
+      .bind(action.external_id, action.display_name, action.platform).run();
+  } else if (action.action_type === "follow" || action.action_type === "follow_back") {
+    await env.DB.prepare(`INSERT OR REPLACE INTO planner_exclusions
+      (external_id, action_kind, reason, created_at)
+      VALUES (?, 'follow', 'Profilo saltato: non riproporre', CURRENT_TIMESTAMP)`)
       .bind(action.external_id).run();
   }
 }
@@ -451,10 +496,11 @@ async function readPlanner() {
     summary: {
       pending: rows.filter((item) => item.status === "pending").length,
       completed: rows.filter((item) => item.status === "completed").length,
-      follows: rows.filter((item) => item.action_type === "follow" || item.action_type === "follow_back").length,
+      follows: rows.filter((item) => item.status === "pending"
+        && (item.action_type === "follow" || item.action_type === "follow_back")).length,
       comments: 0,
-      unfollows: rows.filter((item) => item.action_type === "unfollow").length,
-      lostFollowers: rows.filter((item) => item.action_type === "lost_follower").length,
+      unfollows: rows.filter((item) => item.status === "pending" && item.action_type === "unfollow").length,
+      lostFollowers: rows.filter((item) => item.status === "pending" && item.action_type === "lost_follower").length,
     },
   };
 }
@@ -492,8 +538,7 @@ export async function POST(request: Request) {
   } else if (body.operation === "complete" && Number.isInteger(body.actionId)) {
     await completeAction(Number(body.actionId));
   } else if (body.operation === "skip" && Number.isInteger(body.actionId)) {
-    await env.DB.prepare("UPDATE daily_actions SET status = 'skipped' WHERE id = ?")
-      .bind(Number(body.actionId)).run();
+    await skipAction(Number(body.actionId));
   } else if (body.operation === "settings") {
     const current = await readSettings();
     const clamp = (value: number | undefined, fallback: number, max: number) =>
@@ -503,7 +548,7 @@ export async function POST(request: Request) {
       .bind(
         clamp(body.settings?.followsPerDay, current.follows_per_day, 30),
         0,
-        clamp(body.settings?.unfollowsPerDay, current.unfollows_per_day, 30),
+        clamp(body.settings?.unfollowsPerDay, current.unfollows_per_day, 5000),
         clamp(body.settings?.reviewDays, current.review_days, 30),
       ).run();
   } else if (body.operation !== "regenerate") {

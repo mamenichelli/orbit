@@ -217,6 +217,21 @@ class InstagramWebSessionTests(TestCase):
 
         self.assertIsNone(orbit.score_candidate(profile))
 
+    def test_score_accepts_italian_profile_with_gender_not_declared(self):
+        profile = {
+            "biography": "Psicologia e benessere a Bologna",
+            "follower_count": 700,
+            "following_count": 800,
+            "media_count": 30,
+            "is_private": True,
+        }
+
+        scored = orbit.score_candidate(profile)
+
+        self.assertIsNotNone(scored)
+        assert scored is not None
+        self.assertFalse(scored[2]["femaleSelfDeclared"])
+
     def test_score_marks_female_identity_only_from_public_bio(self):
         profile = {
             "biography": "Imprenditrice italiana, mamma e fotografa a Roma",

@@ -43,6 +43,13 @@
       "when": 1785848899345,
       "tag": "0005_icy_salo",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1785918079262,
+      "tag": "0006_tense_snowbird",
+      "breakpoints": true
     }
   ]
 }

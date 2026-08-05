@@ -442,6 +442,11 @@ def score_candidate(profile: Any) -> tuple[int, str, dict[str, Any]] | None:
         r"fondatrice|fotografa|autrice|italiana)\b",
         public_text,
     ))
+    male_self_declared = bool(re.search(
+        r"\b(he\s*/\s*him|uomo|ragazzo|marito|imprenditore|fondatore|"
+        r"fotografo|autore|italiano)\b",
+        public_text,
+    ))
     edges = field_of(edge_media, "edges", []) or []
     timestamps = [
         int(field_of(field_of(edge, "node", {}) or {}, "taken_at_timestamp", 0) or 0)
@@ -456,7 +461,7 @@ def score_candidate(profile: Any) -> tuple[int, str, dict[str, Any]] | None:
 
     # Hard filters: these profiles consume follow slots but show little evidence
     # that they reciprocate or are maintained by a real, active person.
-    if not italian_signal or not female_self_declared or anonymous or media_count < 3 or followers <= 0 or following < 50:
+    if not italian_signal or male_self_declared or anonymous or media_count < 3 or followers <= 0 or following < 50:
         return None
     if followers > 10_000 and ratio < 0.50:
         return None
@@ -492,7 +497,7 @@ def score_candidate(profile: Any) -> tuple[int, str, dict[str, Any]] | None:
     if is_verified:
         score -= 6
     if female_self_declared:
-        score += 8
+        score += 12
     score = max(35, min(92, score))
     activity_score = min(
         100,
@@ -506,7 +511,7 @@ def score_candidate(profile: Any) -> tuple[int, str, dict[str, Any]] | None:
         else "attivita privata non visibile"
     )
     reason = (
-        f"profilo italiano{' con identita femminile dichiarata' if female_self_declared else ''}, "
+        f"profilo italiano{' con identita femminile dichiarata' if female_self_declared else ' con genere non dichiarato'}, "
         f"{media_count} post, {recency}, segue {following} profili su {followers} follower "
         f"(rapporto {ratio:.2f})"
     )

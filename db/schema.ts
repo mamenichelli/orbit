@@ -105,11 +105,20 @@ export const dailyActions = sqliteTable("daily_actions", {
   uniqueIndex("daily_actions_date_target_type_idx").on(table.actionDate, table.externalId, table.actionType),
 ]);
 
+export const plannerExclusions = sqliteTable("planner_exclusions", {
+  externalId: text("external_id").notNull(),
+  actionKind: text("action_kind").notNull(),
+  reason: text("reason").notNull().default("saltato dall’utente"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("planner_exclusions_target_kind_idx").on(table.externalId, table.actionKind),
+]);
+
 export const plannerSettings = sqliteTable("planner_settings", {
   id: integer("id").primaryKey(),
   followsPerDay: integer("follows_per_day").notNull().default(12),
-  commentsPerDay: integer("comments_per_day").notNull().default(10),
-  unfollowsPerDay: integer("unfollows_per_day").notNull().default(8),
+  commentsPerDay: integer("comments_per_day").notNull().default(0),
+  unfollowsPerDay: integer("unfollows_per_day").notNull().default(1000),
   reviewDays: integer("review_days").notNull().default(10),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });

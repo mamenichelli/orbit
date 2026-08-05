@@ -168,7 +168,7 @@ const emptyGrowth: GrowthState = {
 const emptyPlanner: PlannerState = {
   date: "",
   actions: [],
-  settings: { follows_per_day: 12, comments_per_day: 0, unfollows_per_day: 8, review_days: 10 },
+  settings: { follows_per_day: 12, comments_per_day: 0, unfollows_per_day: 1000, review_days: 10 },
   totals: {},
   summary: { pending: 0, completed: 0, follows: 0, unfollows: 0, lostFollowers: 0 },
 };
@@ -474,13 +474,13 @@ export default function Home() {
         <div><p className="eyebrow">PRIORITÀ AUTOMATICHE</p><h2>Profili con maggiore reciprocità</h2></div>
         <span className="live-pill">● LIVE</span>
       </div>
-      <p className="muted">La lista automatica accetta solo donne con segnali pubblici italiani e identità femminile dichiarata nella bio. Esclusi account vuoti, inattivi e grandi profili che seguono pochissime persone.</p>
+      <p className="muted">Ranking per affinità italiana, attività recente, interazioni osservate e rapporto seguiti/follower. Le donne che si dichiarano tali nella bio hanno priorità; i profili senza genere dichiarato possono completare la lista. Esclusi account vuoti e grandi profili poco propensi alla reciprocità.</p>
       <div className="candidate-list">
         {loading && !snapshot.opportunities.length && <div className="all-done">Sto verificando attività, relazioni e segnali di reciprocità…</div>}
         {!loading && !visibleCandidates.length && (
           <div className="all-done">
             {snapshot.accounts.length
-              ? "Profilo connesso. Attendi la prossima analisi delle relazioni o la prima interazione ricevuta."
+              ? "Nessun nuovo profilo ancora qualificato. Orbit non inventa probabilità: pubblica un account solo dopo aver verificato segnali reali di attività, affinità e reciprocità."
               : "Collega Instagram professionale per iniziare."}
           </div>
         )}
@@ -588,7 +588,7 @@ export default function Home() {
 
             <section className="daily-grid">
               {dailyActionPanel("Chi seguire", "FOLLOW STRATEGICI", ["follow", "follow_back"], "Aggiungi target o importa le liste Instagram per creare i follow di oggi.")}
-              {dailyActionPanel("Chi defolloware", "SCREMATURA PROTETTA", ["unfollow"], "Importa Follower e Seguiti: Orbit escluderà gli intoccabili e proporrà solo i non reciproci.")}
+              {dailyActionPanel("Chi defolloware", "SCREMATURA PROTETTA", ["unfollow"], "Nessun non-follower da revisionare. Gli account saltati restano protetti e non vengono riproposti.")}
               {dailyActionPanel("Chi ti ha defollowato", "CONTROLLO PERDITE", ["lost_follower"], planner.lastImport ? "Nessun nuovo defollow rilevato rispetto al confronto precedente." : "Importa oggi le liste; dal confronto successivo Orbit rileverà ogni follower perso, anche se non lo segui.")}
             </section>
 
@@ -711,7 +711,7 @@ export default function Home() {
               <strong>Quote giornaliere</strong>
               <div>
                 <label><span>Follow</span><input type="number" min="1" max="30" value={planner.settings.follows_per_day} onChange={(event) => setPlanner((current) => ({ ...current, settings: { ...current.settings, follows_per_day: Number(event.target.value) } }))} /></label>
-                <label><span>Defollow</span><input type="number" min="1" max="30" value={planner.settings.unfollows_per_day} onChange={(event) => setPlanner((current) => ({ ...current, settings: { ...current.settings, unfollows_per_day: Number(event.target.value) } }))} /></label>
+                <label><span>Defollow mostrati</span><input type="number" min="1" max="5000" value={planner.settings.unfollows_per_day} onChange={(event) => setPlanner((current) => ({ ...current, settings: { ...current.settings, unfollows_per_day: Number(event.target.value) } }))} /></label>
                 <label><span>Revisione</span><input type="number" min="1" max="30" value={planner.settings.review_days} onChange={(event) => setPlanner((current) => ({ ...current, settings: { ...current.settings, review_days: Number(event.target.value) } }))} /></label>
               </div>
               <button className="secondary" onClick={() => void plannerRequest({ operation: "settings", settings: { followsPerDay: planner.settings.follows_per_day, unfollowsPerDay: planner.settings.unfollows_per_day, reviewDays: planner.settings.review_days } }, "Quote giornaliere salvate")}>Salva quote</button>

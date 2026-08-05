@@ -138,7 +138,6 @@ async function importCandidates(candidates: DiscoveryCandidate[], followers: Set
       && !followers.has(username)
       && !following.has(username)
       && candidate.italianSignal === true
-      && candidate.femaleSelfDeclared === true
       && mediaCount >= 3
       && followingCount >= 50
       && !(followerCount > 10_000 && ratio < 0.5)
