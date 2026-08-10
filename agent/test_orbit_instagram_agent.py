@@ -143,6 +143,20 @@ class InstagramWebSessionTests(TestCase):
         self.assertEqual(first["username"], "seed.one")
         self.assertEqual(second["username"], "seed.two")
 
+    def test_candidate_history_prevents_repeated_suggestions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / ".env.agent"
+            config_path.write_text("ORBIT_INSTAGRAM_USERNAME=test.account\n", encoding="utf-8")
+            orbit.record_candidate_history(config_path, [
+                {"username": "Candidate.One"},
+                {"username": "candidate.two"},
+            ])
+            orbit.record_candidate_history(config_path, [{"username": "candidate.one"}])
+
+            history = orbit.load_candidate_history(config_path)
+
+        self.assertEqual(history, {"candidate.one", "candidate.two"})
+
     def test_discovery_respects_saved_rate_limit_before_login(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / ".env.agent"

@@ -168,7 +168,7 @@ const emptyGrowth: GrowthState = {
 const emptyPlanner: PlannerState = {
   date: "",
   actions: [],
-  settings: { follows_per_day: 12, comments_per_day: 0, unfollows_per_day: 1000, review_days: 10 },
+  settings: { follows_per_day: 20, comments_per_day: 0, unfollows_per_day: 1000, review_days: 10 },
   totals: {},
   summary: { pending: 0, completed: 0, follows: 0, unfollows: 0, lostFollowers: 0 },
 };

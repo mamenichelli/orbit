@@ -120,7 +120,7 @@ async function ensureSchema() {
     )`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS planner_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
-      follows_per_day INTEGER NOT NULL DEFAULT 12,
+      follows_per_day INTEGER NOT NULL DEFAULT 20,
       comments_per_day INTEGER NOT NULL DEFAULT 0,
       unfollows_per_day INTEGER NOT NULL DEFAULT 1000,
       review_days INTEGER NOT NULL DEFAULT 10,
@@ -128,16 +128,17 @@ async function ensureSchema() {
     )`),
     env.DB.prepare(`INSERT INTO planner_settings
       (id, follows_per_day, comments_per_day, unfollows_per_day, review_days)
-      VALUES (1, 12, 0, 1000, 10) ON CONFLICT(id) DO NOTHING`),
+      VALUES (1, 20, 0, 1000, 10) ON CONFLICT(id) DO NOTHING`),
     env.DB.prepare("UPDATE planner_settings SET comments_per_day = 0 WHERE id = 1"),
     env.DB.prepare("UPDATE planner_settings SET unfollows_per_day = 1000 WHERE unfollows_per_day = 8"),
+    env.DB.prepare("UPDATE planner_settings SET follows_per_day = 20 WHERE follows_per_day = 12"),
   ]);
 }
 
 async function readSettings() {
   return await env.DB.prepare(`SELECT follows_per_day, comments_per_day, unfollows_per_day, review_days
     FROM planner_settings WHERE id = 1`).first<Settings>() ?? {
-    follows_per_day: 12,
+    follows_per_day: 20,
     comments_per_day: 0,
     unfollows_per_day: 1000,
     review_days: 10,
@@ -294,6 +295,11 @@ async function addTarget(usernameValue: string, source: string, sourceDetail: st
 async function generateToday() {
   const date = todayRome();
   const settings = await readSettings();
+  await env.DB.prepare(`INSERT OR IGNORE INTO planner_exclusions
+    (external_id, action_kind, reason)
+    SELECT external_id, 'follow', 'defollowato in precedenza'
+    FROM daily_actions
+    WHERE action_type = 'unfollow' AND status = 'completed'`).run();
   await env.DB.prepare(`UPDATE daily_actions SET status = 'invalid'
     WHERE status = 'pending' AND action_type = 'comment'`).run();
   await env.DB.prepare(`UPDATE daily_actions SET status = 'invalid'
@@ -430,9 +436,15 @@ async function completeAction(id: number) {
       review_after = ?, updated_at = CURRENT_TIMESTAMP WHERE external_id = ?`)
       .bind(reviewAfter, action.external_id).run();
   } else if (action.action_type === "unfollow") {
-    await env.DB.prepare(`UPDATE growth_targets SET you_follow = 0, followed_at = NULL,
-      review_after = NULL, updated_at = CURRENT_TIMESTAMP WHERE external_id = ?`)
-      .bind(action.external_id).run();
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE growth_targets SET you_follow = 0, followed_at = NULL,
+        review_after = NULL, updated_at = CURRENT_TIMESTAMP WHERE external_id = ?`)
+        .bind(action.external_id),
+      env.DB.prepare(`INSERT INTO planner_exclusions (external_id, action_kind, reason)
+        VALUES (?, 'follow', 'defollowato in precedenza')
+        ON CONFLICT(external_id, action_kind) DO UPDATE SET reason = excluded.reason`)
+        .bind(action.external_id),
+    ]);
   }
 }
 

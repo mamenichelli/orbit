@@ -84,6 +84,44 @@ def discovery_result_path(config_path: Path) -> Path:
     return directory / "instagram-discovery-last.json"
 
 
+def candidate_history_path(config_path: Path) -> Path:
+    directory = config_path.parent / ".orbit-agent"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / "instagram-candidate-history.json"
+
+
+def load_candidate_history(config_path: Path) -> set[str]:
+    path = candidate_history_path(config_path)
+    if not path.exists():
+        return set()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return {
+            str(item).strip().lstrip("@").lower()
+            for item in payload.get("usernames", [])
+            if str(item).strip()
+        }
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return set()
+
+
+def record_candidate_history(config_path: Path, candidates: list[dict[str, Any]]) -> None:
+    usernames = load_candidate_history(config_path)
+    usernames.update(
+        str(candidate.get("username") or "").strip().lstrip("@").lower()
+        for candidate in candidates
+        if str(candidate.get("username") or "").strip()
+    )
+    candidate_history_path(config_path).write_text(
+        json.dumps(
+            {"updatedAt": int(time.time()), "usernames": sorted(usernames)[-2_000:]},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+
+
 def save_discovery_result(config_path: Path, status: str, **details: Any) -> None:
     discovery_result_path(config_path).write_text(
         json.dumps(
@@ -648,6 +686,28 @@ def fetch_interaction_signals(
     return signals
 
 
+def fetch_planner_follow_usernames(config: dict[str, str]) -> set[str]:
+    """Avoid rediscovering profiles already proposed, completed or skipped today."""
+    try:
+        dashboard = required(config, "ORBIT_DASHBOARD_URL").rstrip("/")
+        response = requests.get(
+            f"{dashboard}/api/planner",
+            headers=gateway_headers(config),
+            timeout=30,
+        )
+        response.raise_for_status()
+        actions = response.json().get("actions", [])
+    except (KeyError, TypeError, ValueError, RuntimeError, requests.RequestException):
+        return set()
+    return {
+        str(action.get("username") or "").strip().lstrip("@").lower()
+        for action in actions
+        if isinstance(action, dict)
+        and action.get("action_type") in {"follow", "follow_back"}
+        and str(action.get("username") or "").strip()
+    }
+
+
 def discover_candidates_with_browser(
     config_path: Path,
     queries: list[str],
@@ -656,7 +716,7 @@ def discover_candidates_with_browser(
     own_followers: set[str],
     own_following: set[str],
     max_candidates: int,
-    max_profile_checks: int = 60,
+    max_profile_checks: int = 80,
 ) -> list[dict[str, Any]]:
     """Use the authenticated Instagram UI when private JSON search is throttled."""
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -687,12 +747,29 @@ def discover_candidates_with_browser(
     configured_username = required(config, "ORBIT_INSTAGRAM_USERNAME")
     saved_session_id = keyring.get_password(KEYRING_SERVICE, f"{configured_username}:sessionid")
     with sync_playwright() as playwright:
-        context = playwright.chromium.launch_persistent_context(
-            str(browser_profile),
-            channel="msedge",
-            headless=True,
-            locale="it-IT",
-            viewport={"width": 1440, "height": 1000},
+        browser = None
+        if saved_session_id:
+            # An isolated context avoids failing when the scheduled task still owns
+            # the persistent Edge profile. Authentication is restored from the
+            # session cookie kept in Windows Credential Manager.
+            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            context = browser.new_context(
+                locale="it-IT",
+                viewport={"width": 1440, "height": 1000},
+            )
+        else:
+            context = playwright.chromium.launch_persistent_context(
+                str(browser_profile),
+                channel="msedge",
+                headless=True,
+                locale="it-IT",
+                viewport={"width": 1440, "height": 1000},
+            )
+        context.route(
+            "**/*",
+            lambda route: route.abort()
+            if route.request.resource_type in {"image", "media", "font"}
+            else route.continue_(),
         )
         if saved_session_id:
             user_match = re.match(r"^\d+", saved_session_id)
@@ -724,13 +801,13 @@ def discover_candidates_with_browser(
             ]
             sources.extend(
                 (f"https://www.instagram.com/{seed}/", f"rete di @{seed}")
-                for seed in seed_usernames
+                for seed in seed_usernames[:12]
             )
             sources.append(("https://www.instagram.com/explore/people/suggested/", "suggeriti Instagram"))
             for source, source_label in sources:
                 try:
-                    page.goto(source, wait_until="domcontentloaded", timeout=45_000)
-                    page.wait_for_timeout(3_500)
+                    page.goto(source, wait_until="domcontentloaded", timeout=15_000)
+                    page.wait_for_timeout(1_500)
                     if "/accounts/login" in page.url:
                         raise RuntimeError("Sessione browser Instagram scaduta")
                     paths = page.locator('a[href^="/"]').evaluate_all(
@@ -748,6 +825,10 @@ def discover_candidates_with_browser(
                             discovered[username] = source_label
                 except PlaywrightTimeoutError:
                     continue
+                except Exception as exc:
+                    if isinstance(exc, RuntimeError) and "scaduta" in str(exc).lower():
+                        raise
+                    continue
                 if len(discovered) >= max_profile_checks:
                     break
 
@@ -758,14 +839,14 @@ def discover_candidates_with_browser(
                     page.goto(
                         f"https://www.instagram.com/{username}/",
                         wait_until="domcontentloaded",
-                        timeout=35_000,
+                        timeout=15_000,
                     )
-                    page.wait_for_timeout(1_800)
+                    page.wait_for_timeout(1_000)
                     if "/accounts/login" in page.url:
                         raise RuntimeError("Sessione browser Instagram scaduta")
                     description = page.locator('meta[property="og:description"]').get_attribute("content") or ""
                     title = page.locator('meta[property="og:title"]').get_attribute("content") or ""
-                    header = page.locator("header").inner_text(timeout=5_000)
+                    header = page.locator("header").inner_text(timeout=3_000)
                     profile = browser_profile_payload(description, header, title)
                     profile["username"] = username
                     checked_profiles += 1
@@ -792,8 +873,14 @@ def discover_candidates_with_browser(
                     })
                 except PlaywrightTimeoutError:
                     continue
+                except Exception as exc:
+                    if isinstance(exc, RuntimeError) and "scaduta" in str(exc).lower():
+                        raise
+                    continue
         finally:
             context.close()
+            if browser is not None:
+                browser.close()
 
     print(
         "Diagnostica browser: "
@@ -1037,6 +1124,8 @@ def discover(config_path: Path) -> None:
     cached = load_relation_cache(config_path)
     followers_list = [str(item).lower() for item in cached.get("followers", []) if str(item).strip()]
     following_list = [str(item).lower() for item in cached.get("following", []) if str(item).strip()]
+    previously_proposed = load_candidate_history(config_path) | fetch_planner_follow_usernames(config)
+    discovery_following = set(following_list) | previously_proposed
     search_queries = [
         item.strip() for item in config.get(
             "ORBIT_DISCOVERY_QUERIES",
@@ -1054,13 +1143,13 @@ def discover(config_path: Path) -> None:
         if username_of(item)
     ]
     random.Random(f"{time.strftime('%Y-%m-%d')}:{selected_query}").shuffle(browser_seed_usernames)
-    browser_seed_usernames = browser_seed_usernames[:20]
+    browser_seed_usernames = browser_seed_usernames[:40]
     interaction_signals = fetch_interaction_signals(
         config,
         set(followers_list),
-        set(following_list),
+        discovery_following,
     )
-    max_candidates = max(10, min(20, int(config.get("ORBIT_MAX_CANDIDATES", "12") or 12)))
+    max_candidates = max(10, min(20, int(config.get("ORBIT_MAX_CANDIDATES", "20") or 20)))
 
     def browser_fallback(reason: str, existing_candidates: list[dict[str, Any]] | None = None) -> bool:
         try:
@@ -1070,11 +1159,11 @@ def discover(config_path: Path) -> None:
                 browser_seed_usernames,
                 interaction_signals,
                 set(followers_list),
-                set(following_list),
+                discovery_following,
                 max_candidates=max_candidates,
                 max_profile_checks=max(
                     30,
-                    min(120, int(config.get("ORBIT_BROWSER_PROFILE_CHECKS", "60") or 60)),
+                    min(120, int(config.get("ORBIT_BROWSER_PROFILE_CHECKS", "80") or 80)),
                 ),
             )
         except Exception as exc:
@@ -1096,6 +1185,7 @@ def discover(config_path: Path) -> None:
                 combined_by_username[username] = candidate
         combined_candidates = list(combined_by_username.values())[:max_candidates]
         result = send_snapshot(config, followers_list, following_list, combined_candidates)
+        record_candidate_history(config_path, combined_candidates)
         save_discovery_result(
             config_path,
             "completed_browser",
@@ -1125,7 +1215,7 @@ def discover(config_path: Path) -> None:
             client,
             [],
             set(followers_list),
-            set(following_list),
+            discovery_following,
             per_seed=max(5, min(20, int(config.get("ORBIT_USERS_PER_SEED", "12") or 12))),
             max_candidates=max_candidates,
             automatic_seeds=[],
@@ -1148,6 +1238,7 @@ def discover(config_path: Path) -> None:
         return
 
     result = send_snapshot(config, followers_list, following_list, candidates)
+    record_candidate_history(config_path, candidates)
     cooldown_path(config_path).unlink(missing_ok=True)
     save_discovery_result(
         config_path,

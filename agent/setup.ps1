@@ -41,12 +41,12 @@ $config["ORBIT_USERS_PER_SEED"] = "12"
 $config["ORBIT_MAX_CANDIDATES"] = if ($config.ContainsKey("ORBIT_MAX_CANDIDATES")) {
   $config["ORBIT_MAX_CANDIDATES"]
 } else {
-  "12"
+  "20"
 }
 $config["ORBIT_BROWSER_PROFILE_CHECKS"] = if ($config.ContainsKey("ORBIT_BROWSER_PROFILE_CHECKS")) {
   $config["ORBIT_BROWSER_PROFILE_CHECKS"]
 } else {
-  "60"
+  "80"
 }
 $orderedKeys = @(
   "ORBIT_DASHBOARD_URL", "ORBIT_AGENT_TOKEN", "ORBIT_INSTAGRAM_USERNAME",
