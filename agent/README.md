@@ -30,7 +30,7 @@ Lo script:
 5. salva localmente le relazioni e ruota su una ricerca affine italiana alla volta, aprendo pochi profili per non superare i limiti Instagram;
 6. mantiene profili con segnali pubblici italiani, dà priorità alle donne dichiarate nella bio ed esclude uomini dichiarati, account vuoti, inattivi o sproporzionati;
 7. invia alla dashboard la lista ordinata;
-8. registra `Orbit Instagram Sync` ogni 6 ore e `Orbit Instagram Discovery` ogni 30 minuti; se Instagram limita la ricerca dati, passa automaticamente alla pagina Esplora/Suggeriti del profilo browser locale senza cancellare le candidate già verificate.
+8. registra `Orbit Instagram Sync` ogni 6 ore e `Orbit Instagram Discovery` ogni 30 minuti; ogni lotto cerca 12 candidate verificate, controlla prima i commentatori ricorrenti rilevati tramite il collegamento ufficiale e, se Instagram limita la ricerca dati, completa dalla pagina Esplora/Suggeriti e dalla rete correlata senza cancellare le candidate già verificate.
 
 Per forzare una sincronizzazione:
 

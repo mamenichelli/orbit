@@ -601,13 +601,62 @@ def browser_profile_payload(description: str, header_text: str, title: str = "")
     }
 
 
+def fetch_interaction_signals(
+    config: dict[str, str],
+    own_followers: set[str],
+    own_following: set[str],
+) -> dict[str, dict[str, Any]]:
+    """Read recurring commenters from the official connected-account gateway."""
+    try:
+        dashboard = required(config, "ORBIT_DASHBOARD_URL").rstrip("/")
+        session_response = requests.get(
+            f"{dashboard}/api/meta/snapshot",
+            headers=gateway_headers(config),
+            timeout=30,
+        )
+        session_response.raise_for_status()
+        session = session_response.json()
+        gateway_response = requests.get(
+            str(session["gatewayUrl"]),
+            headers={"Authorization": f"Bearer {session['accessToken']}"},
+            timeout=90,
+        )
+        gateway_response.raise_for_status()
+        opportunities = gateway_response.json().get("opportunities", [])
+    except (KeyError, TypeError, ValueError, RuntimeError, requests.RequestException):
+        return {}
+
+    signals: dict[str, dict[str, Any]] = {}
+    for item in opportunities:
+        if not isinstance(item, dict) or str(item.get("platform") or "").lower() != "instagram":
+            continue
+        username = str(item.get("username") or "").strip().lstrip("@").lower()
+        interactions = max(0, int(item.get("interactions") or 0))
+        if (
+            not username
+            or interactions < 2
+            or username in own_followers
+            or username in own_following
+        ):
+            continue
+        current = signals.get(username)
+        if current is None or interactions > int(current.get("interactions") or 0):
+            signals[username] = {
+                "interactions": interactions,
+                "gatewayScore": max(0, min(99, int(item.get("score") or 0))),
+            }
+    return signals
+
+
 def discover_candidates_with_browser(
     config_path: Path,
-    query: str,
+    queries: list[str],
+    seed_usernames: list[str],
+    interaction_signals: dict[str, dict[str, Any]],
     own_followers: set[str],
     own_following: set[str],
     max_candidates: int,
-    max_profile_checks: int = 20,
+    max_profile_checks: int = 60,
 ) -> list[dict[str, Any]]:
     """Use the authenticated Instagram UI when private JSON search is throttled."""
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -621,7 +670,15 @@ def discover_candidates_with_browser(
         "accounts", "about", "api", "developer", "direct", "directory", "emails",
         "explore", "legal", "privacy", "reels", "stories", "terms", "web",
     }
-    discovered: list[str] = []
+    discovered: dict[str, str] = {
+        username: f"interazioni ricevute ({int(signal.get('interactions') or 0)})"
+        for username, signal in sorted(
+            interaction_signals.items(),
+            key=lambda item: int(item[1].get("interactions") or 0),
+            reverse=True,
+        )
+        if username not in own_followers and username not in own_following
+    }
     candidates: list[dict[str, Any]] = []
     checked_profiles = 0
     profiles_without_metrics = 0
@@ -662,10 +719,15 @@ def discover_candidates_with_browser(
         page = context.pages[0] if context.pages else context.new_page()
         try:
             sources = [
-                f"https://www.instagram.com/explore/search/keyword/?q={quote_plus(query)}",
-                "https://www.instagram.com/explore/people/suggested/",
+                (f"https://www.instagram.com/explore/search/keyword/?q={quote_plus(query)}", query)
+                for query in queries
             ]
-            for source in sources:
+            sources.extend(
+                (f"https://www.instagram.com/{seed}/", f"rete di @{seed}")
+                for seed in seed_usernames
+            )
+            sources.append(("https://www.instagram.com/explore/people/suggested/", "suggeriti Instagram"))
+            for source, source_label in sources:
                 try:
                     page.goto(source, wait_until="domcontentloaded", timeout=45_000)
                     page.wait_for_timeout(3_500)
@@ -683,13 +745,13 @@ def discover_candidates_with_browser(
                             and username not in own_following
                             and username not in discovered
                         ):
-                            discovered.append(username)
+                            discovered[username] = source_label
                 except PlaywrightTimeoutError:
                     continue
                 if len(discovered) >= max_profile_checks:
                     break
 
-            for username in discovered[:max_profile_checks]:
+            for username, source_label in list(discovered.items())[:max_profile_checks]:
                 if len(candidates) >= max_candidates:
                     break
                 try:
@@ -714,13 +776,18 @@ def discover_candidates_with_browser(
                         profiles_rejected += 1
                         continue
                     score, signal, metrics = scored
+                    interaction_count = int((interaction_signals.get(username) or {}).get("interactions") or 0)
+                    if interaction_count:
+                        score = min(99, score + min(24, interaction_count * 3))
+                        signal = f"ha gia interagito {interaction_count} volte; {signal}"
                     candidates.append({
                         "externalId": f"ig:browser:{username}",
                         "username": username,
                         "displayName": str(profile.get("full_name") or username),
-                        "sourceDetail": f"Esplora Instagram: {query}; {signal}",
+                        "sourceDetail": f"Esplora Instagram: {source_label}; {signal}",
                         "reason": signal,
                         "score": score,
+                        "interactions": interaction_count,
                         **metrics,
                     })
                 except PlaywrightTimeoutError:
@@ -736,7 +803,11 @@ def discover_candidates_with_browser(
 
     return sorted(
         candidates,
-        key=lambda item: (bool(item.get("femaleSelfDeclared")), int(item["score"])),
+        key=lambda item: (
+            int(item.get("interactions") or 0),
+            bool(item.get("femaleSelfDeclared")),
+            int(item["score"]),
+        ),
         reverse=True,
     )
 
@@ -846,7 +917,7 @@ def discover_candidates(
     for username, (short_user, seed) in list(raw.items()):
         if len(candidates) >= max_candidates:
             break
-        if web_session and checked_profiles >= min(6, max(3, max_candidates * 2)):
+        if web_session and checked_profiles >= min(30, max(12, max_candidates * 3)):
             break
         try:
             user_id = str(
@@ -969,24 +1040,41 @@ def discover(config_path: Path) -> None:
     search_queries = [
         item.strip() for item in config.get(
             "ORBIT_DISCOVERY_QUERIES",
-            "psicologa roma,psicologa milano,benessere mentale italia,biohacking italiana,"
-            "neuroscienze italia,intelligenza artificiale italia",
+            "mamma italiana roma,mamma italiana milano,imprenditrice italiana,"
+            "psicologa roma,psicologa milano,benessere donna italia,fitness donna italiana,"
+            "travel blogger italiana,creator italiana roma,fotografa italiana",
         ).split(",") if item.strip()
     ]
     selected_query = str(next_discovery_seed(config_path, search_queries))
-    max_candidates = max(1, min(5, int(config.get("ORBIT_MAX_CANDIDATES", "3") or 3)))
+    selected_index = search_queries.index(selected_query)
+    ordered_queries = search_queries[selected_index:] + search_queries[:selected_index]
+    browser_seed_usernames = [
+        username_of(item)
+        for item in cached.get("automaticSeeds", [])
+        if username_of(item)
+    ]
+    random.Random(f"{time.strftime('%Y-%m-%d')}:{selected_query}").shuffle(browser_seed_usernames)
+    browser_seed_usernames = browser_seed_usernames[:20]
+    interaction_signals = fetch_interaction_signals(
+        config,
+        set(followers_list),
+        set(following_list),
+    )
+    max_candidates = max(10, min(20, int(config.get("ORBIT_MAX_CANDIDATES", "12") or 12)))
 
-    def browser_fallback(reason: str) -> bool:
+    def browser_fallback(reason: str, existing_candidates: list[dict[str, Any]] | None = None) -> bool:
         try:
             browser_candidates = discover_candidates_with_browser(
                 config_path,
-                selected_query,
+                ordered_queries,
+                browser_seed_usernames,
+                interaction_signals,
                 set(followers_list),
                 set(following_list),
                 max_candidates=max_candidates,
                 max_profile_checks=max(
-                    8,
-                    min(30, int(config.get("ORBIT_BROWSER_PROFILE_CHECKS", "20") or 20)),
+                    30,
+                    min(120, int(config.get("ORBIT_BROWSER_PROFILE_CHECKS", "60") or 60)),
                 ),
             )
         except Exception as exc:
@@ -1001,12 +1089,18 @@ def discover(config_path: Path) -> None:
             )
             print(f"Ricerca browser non disponibile: {type(exc).__name__}: {error_message}")
             return False
-        result = send_snapshot(config, followers_list, following_list, browser_candidates)
+        combined_by_username: dict[str, dict[str, Any]] = {}
+        for candidate in [*(existing_candidates or []), *browser_candidates]:
+            username = str(candidate.get("username") or "").strip().lower()
+            if username and username not in combined_by_username:
+                combined_by_username[username] = candidate
+        combined_candidates = list(combined_by_username.values())[:max_candidates]
+        result = send_snapshot(config, followers_list, following_list, combined_candidates)
         save_discovery_result(
             config_path,
             "completed_browser",
             reason=reason,
-            candidatesFound=len(browser_candidates),
+            candidatesFound=len(combined_candidates),
             candidatesAccepted=int(result.get("candidates", 0) or 0),
             seed=f"ricerca:{selected_query}",
         )
@@ -1046,7 +1140,10 @@ def discover(config_path: Path) -> None:
         print(f"Ricerca graduale rinviata; nuovo tentativo automatico dopo le {retry_time}.")
         return
 
-    if not candidates and browser_fallback("api_zero_candidates"):
+    if len(candidates) < min(10, max_candidates) and browser_fallback(
+        "api_insufficient_candidates",
+        candidates,
+    ):
         cooldown_path(config_path).unlink(missing_ok=True)
         return
 

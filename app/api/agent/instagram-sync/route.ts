@@ -17,6 +17,7 @@ type DiscoveryCandidate = {
   activityScore?: number;
   italianSignal?: boolean;
   femaleSelfDeclared?: boolean;
+  interactions?: number;
 };
 
 function cleanUsername(value: string) {
@@ -152,12 +153,13 @@ async function importCandidates(candidates: DiscoveryCandidate[], followers: Set
         (external_id, username, display_name, platform, profile_url, source, source_detail,
          interactions, score, follower_count, following_count, media_count, is_private,
          last_post_at, activity_score, italian_signal, female_self_declared, follows_you, you_follow, updated_at)
-        VALUES (?, ?, ?, 'Instagram', ?, 'open_source_discovery', ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, 'Instagram', ?, 'open_source_discovery', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, CURRENT_TIMESTAMP)
         ON CONFLICT(username) DO UPDATE SET
           display_name = excluded.display_name,
           profile_url = excluded.profile_url,
           source = excluded.source,
           source_detail = excluded.source_detail,
+          interactions = MAX(growth_targets.interactions, excluded.interactions),
           score = excluded.score,
           follower_count = excluded.follower_count,
           following_count = excluded.following_count,
@@ -176,6 +178,7 @@ async function importCandidates(candidates: DiscoveryCandidate[], followers: Set
           candidate.displayName || username,
           `https://www.instagram.com/${username}/`,
           candidate.sourceDetail || candidate.reason || "scoperta automatica",
+          Math.max(0, Math.round(candidate.interactions ?? 0)),
           score,
           Math.max(0, Math.round(candidate.followerCount ?? 0)),
           Math.max(0, Math.round(candidate.followingCount ?? 0)),

@@ -297,6 +297,13 @@ async function generateToday() {
   await env.DB.prepare(`UPDATE daily_actions SET status = 'invalid'
     WHERE status = 'pending' AND action_type = 'comment'`).run();
   await env.DB.prepare(`UPDATE daily_actions SET status = 'invalid'
+    WHERE status = 'pending' AND action_type = 'unfollow'
+      AND EXISTS (
+        SELECT 1 FROM growth_targets t
+        WHERE t.external_id = daily_actions.external_id
+          AND COALESCE(t.you_follow, 0) <> 1
+      )`).run();
+  await env.DB.prepare(`UPDATE daily_actions SET status = 'invalid'
     WHERE action_date = ? AND status = 'pending' AND action_type IN ('follow', 'follow_back')
       AND EXISTS (
         SELECT 1 FROM growth_targets t

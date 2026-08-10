@@ -25,6 +25,10 @@ class _Response:
     def json(self):
         return self.payload
 
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise orbit.requests.HTTPError(f"HTTP {self.status_code}")
+
 
 class _HTTPSession:
     def __init__(self):
@@ -49,6 +53,30 @@ class _HTTPSession:
 
 
 class InstagramWebSessionTests(TestCase):
+    def test_official_recurring_interactions_are_prioritized(self):
+        session = _Response(
+            {"gatewayUrl": "https://gateway.test/snapshot", "accessToken": "short-token"},
+            "https://dashboard.test/api/meta/snapshot",
+        )
+        gateway = _Response(
+            {"opportunities": [
+                {"platform": "Instagram", "username": "candidate.it", "interactions": 6, "score": 90},
+                {"platform": "Instagram", "username": "already.followed", "interactions": 12, "score": 99},
+            ]},
+            "https://gateway.test/snapshot",
+        )
+        config = {
+            "ORBIT_DASHBOARD_URL": "https://dashboard.test",
+            "ORBIT_AGENT_TOKEN": "agent-token",
+            "ORBIT_SIWC_BYPASS_TOKEN": "sites-token",
+        }
+
+        with mock.patch.object(orbit.requests, "get", side_effect=[session, gateway]):
+            result = orbit.fetch_interaction_signals(config, set(), {"already.followed"})
+
+        self.assertEqual(result["candidate.it"]["interactions"], 6)
+        self.assertNotIn("already.followed", result)
+
     def test_compact_instagram_counts_are_parsed(self):
         self.assertEqual(orbit.parse_compact_count("1.693"), 1_693)
         self.assertEqual(orbit.parse_compact_count("1,2 mila"), 1_200)
