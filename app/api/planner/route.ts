@@ -262,6 +262,12 @@ async function importRelations(followers: string[], following: string[]) {
     updated_at = CURRENT_TIMESTAMP
     WHERE follows_you = 1 AND COALESCE(relation_batch, '') <> ?`)
     .bind(batchId, batchId).run();
+  await env.DB.prepare(`UPDATE growth_targets SET
+    you_follow = 0,
+    review_after = NULL,
+    updated_at = CURRENT_TIMESTAMP
+    WHERE you_follow = 1 AND COALESCE(relation_batch, '') <> ?`)
+    .bind(batchId).run();
   await env.DB.prepare(`INSERT INTO relation_imports
     (batch_id, followers_count, following_count) VALUES (?, ?, ?)`)
     .bind(batchId, followerSet.size, followingSet.size).run();
@@ -295,6 +301,20 @@ async function addTarget(usernameValue: string, source: string, sourceDetail: st
 async function generateToday() {
   const date = todayRome();
   const settings = await readSettings();
+  await env.DB.prepare(`UPDATE growth_targets SET
+    you_follow = 0,
+    review_after = NULL,
+    updated_at = CURRENT_TIMESTAMP
+    WHERE you_follow = 1
+      AND EXISTS (
+        SELECT 1 FROM relation_imports latest
+        WHERE latest.id = (SELECT MAX(id) FROM relation_imports)
+          AND COALESCE(growth_targets.relation_batch, '') <> latest.batch_id
+          AND (growth_targets.followed_at IS NULL
+            OR datetime(growth_targets.followed_at) <= datetime(latest.imported_at))
+      )`).run();
+  await env.DB.prepare(`UPDATE growth_targets SET unfollowed_you_at = NULL
+    WHERE COALESCE(follows_you, 0) = 1 AND unfollowed_you_at IS NOT NULL`).run();
   await env.DB.prepare(`INSERT OR IGNORE INTO planner_exclusions
     (external_id, action_kind, reason)
     SELECT external_id, 'follow', 'defollowato in precedenza'
@@ -307,7 +327,7 @@ async function generateToday() {
       AND EXISTS (
         SELECT 1 FROM growth_targets t
         WHERE t.external_id = daily_actions.external_id
-          AND COALESCE(t.you_follow, 0) <> 1
+          AND (COALESCE(t.you_follow, 0) <> 1 OR COALESCE(t.follows_you, 0) = 1)
       )`).run();
   await env.DB.prepare(`UPDATE daily_actions SET status = 'invalid'
     WHERE action_date = ? AND status = 'pending' AND action_type IN ('follow', 'follow_back')
@@ -335,7 +355,8 @@ async function generateToday() {
     WHERE status = 'pending' AND action_type = 'lost_follower'
       AND EXISTS (
         SELECT 1 FROM growth_targets t
-        WHERE t.external_id = daily_actions.external_id AND t.unfollowed_you_at IS NULL
+        WHERE t.external_id = daily_actions.external_id
+          AND (COALESCE(t.follows_you, 0) = 1 OR t.unfollowed_you_at IS NULL)
       )`).run();
   const pendingFollowRow = await env.DB.prepare(`SELECT COUNT(*) AS count
     FROM daily_actions
@@ -499,6 +520,10 @@ async function readPlanner() {
       t.last_post_at, t.activity_score, t.italian_signal, t.female_self_declared
       FROM daily_actions a JOIN growth_targets t ON t.external_id = a.external_id
       WHERE a.action_date = ? AND a.status <> 'invalid'
+        AND (a.action_type <> 'unfollow'
+          OR (COALESCE(t.you_follow, 0) = 1 AND COALESCE(t.follows_you, 0) = 0))
+        AND (a.action_type <> 'lost_follower'
+          OR (COALESCE(t.follows_you, 0) = 0 AND t.unfollowed_you_at IS NOT NULL))
       ORDER BY CASE a.action_type WHEN 'follow' THEN 1 WHEN 'follow_back' THEN 1
         WHEN 'comment' THEN 2 WHEN 'unfollow' THEN 3 WHEN 'lost_follower' THEN 4 ELSE 5 END,
         a.status = 'completed', a.probability DESC`).bind(date).all(),

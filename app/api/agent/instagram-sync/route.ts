@@ -121,6 +121,12 @@ async function importRelations(followerValues: string[], followingValues: string
     updated_at = CURRENT_TIMESTAMP
     WHERE follows_you = 1 AND COALESCE(relation_batch, '') <> ?`)
     .bind(batchId, batchId).run();
+  await env.DB.prepare(`UPDATE growth_targets SET
+    you_follow = 0,
+    review_after = NULL,
+    updated_at = CURRENT_TIMESTAMP
+    WHERE you_follow = 1 AND COALESCE(relation_batch, '') <> ?`)
+    .bind(batchId).run();
   await env.DB.prepare(`INSERT INTO relation_imports
     (batch_id, followers_count, following_count) VALUES (?, ?, ?)`)
     .bind(batchId, followers.size, following.size).run();
