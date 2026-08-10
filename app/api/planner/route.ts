@@ -337,6 +337,12 @@ async function generateToday() {
         SELECT 1 FROM growth_targets t
         WHERE t.external_id = daily_actions.external_id AND t.unfollowed_you_at IS NULL
       )`).run();
+  const pendingFollowRow = await env.DB.prepare(`SELECT COUNT(*) AS count
+    FROM daily_actions
+    WHERE action_date = ? AND status = 'pending'
+      AND action_type IN ('follow', 'follow_back')`)
+    .bind(date).first<{ count: number }>();
+  const followSlots = Math.max(0, settings.follows_per_day - Number(pendingFollowRow?.count ?? 0));
   await env.DB.prepare(`INSERT OR IGNORE INTO daily_actions
     (action_date, external_id, action_type, probability, reason)
     SELECT ?, t.external_id,
@@ -384,13 +390,19 @@ async function generateToday() {
         SELECT 1 FROM planner_exclusions x
         WHERE x.external_id = t.external_id AND x.action_kind = 'follow'
       )
+      AND NOT EXISTS (
+        SELECT 1 FROM daily_actions today
+        WHERE today.action_date = ?
+          AND today.external_id = t.external_id
+          AND today.action_type IN ('follow', 'follow_back')
+      )
     ORDER BY
       (t.interactions > 0) DESC,
       COALESCE(t.female_self_declared, 0) DESC,
       CASE t.source WHEN 'organic_interaction' THEN 4 WHEN 'open_source_discovery' THEN 3
         WHEN 'exchange_group' THEN 2 ELSE 1 END DESC,
       t.interactions DESC, t.score DESC, t.last_interaction DESC
-    LIMIT ?`).bind(date, settings.follows_per_day).run();
+    LIMIT ?`).bind(date, date, followSlots).run();
 
   await env.DB.prepare(`INSERT OR IGNORE INTO daily_actions
     (action_date, external_id, action_type, probability, reason)
