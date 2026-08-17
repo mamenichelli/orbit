@@ -301,18 +301,6 @@ async function addTarget(usernameValue: string, source: string, sourceDetail: st
 async function generateToday() {
   const date = todayRome();
   const settings = await readSettings();
-  await env.DB.prepare(`UPDATE growth_targets SET
-    you_follow = 0,
-    review_after = NULL,
-    updated_at = CURRENT_TIMESTAMP
-    WHERE you_follow = 1
-      AND EXISTS (
-        SELECT 1 FROM relation_imports latest
-        WHERE latest.id = (SELECT MAX(id) FROM relation_imports)
-          AND COALESCE(growth_targets.relation_batch, '') <> latest.batch_id
-          AND (growth_targets.followed_at IS NULL
-            OR datetime(growth_targets.followed_at) <= datetime(latest.imported_at))
-      )`).run();
   await env.DB.prepare(`UPDATE growth_targets SET unfollowed_you_at = NULL
     WHERE COALESCE(follows_you, 0) = 1 AND unfollowed_you_at IS NOT NULL`).run();
   await env.DB.prepare(`INSERT OR IGNORE INTO planner_exclusions
@@ -327,7 +315,9 @@ async function generateToday() {
       AND EXISTS (
         SELECT 1 FROM growth_targets t
         WHERE t.external_id = daily_actions.external_id
-          AND (COALESCE(t.you_follow, 0) <> 1 OR COALESCE(t.follows_you, 0) = 1)
+          AND (COALESCE(t.you_follow, 0) <> 1
+            OR COALESCE(t.follows_you, 0) = 1
+            OR t.unfollowed_you_at IS NULL)
       )`).run();
   await env.DB.prepare(`UPDATE daily_actions SET status = 'invalid'
     WHERE action_date = ? AND status = 'pending' AND action_type IN ('follow', 'follow_back')
@@ -428,11 +418,12 @@ async function generateToday() {
   await env.DB.prepare(`INSERT OR IGNORE INTO daily_actions
     (action_date, external_id, action_type, probability, reason)
     SELECT ?, t.external_id, 'unfollow', 95,
-      'Lo segui ma non ti segue; finestra di reciprocità scaduta e profilo non protetto'
+      'Ti ha defollowato, tu lo segui ancora e il profilo non è protetto'
     FROM growth_targets t
     LEFT JOIN protected_profiles p ON p.external_id = t.external_id
     WHERE t.you_follow = 1
       AND t.follows_you = 0
+      AND t.unfollowed_you_at IS NOT NULL
       AND p.external_id IS NULL
       AND t.review_after IS NOT NULL
       AND datetime(t.review_after) <= datetime('now')
@@ -521,7 +512,9 @@ async function readPlanner() {
       FROM daily_actions a JOIN growth_targets t ON t.external_id = a.external_id
       WHERE a.action_date = ? AND a.status <> 'invalid'
         AND (a.action_type <> 'unfollow'
-          OR (COALESCE(t.you_follow, 0) = 1 AND COALESCE(t.follows_you, 0) = 0))
+          OR (COALESCE(t.you_follow, 0) = 1
+            AND COALESCE(t.follows_you, 0) = 0
+            AND t.unfollowed_you_at IS NOT NULL))
         AND (a.action_type <> 'lost_follower'
           OR (COALESCE(t.follows_you, 0) = 0 AND t.unfollowed_you_at IS NOT NULL))
       ORDER BY CASE a.action_type WHEN 'follow' THEN 1 WHEN 'follow_back' THEN 1
