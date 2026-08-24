@@ -202,6 +202,46 @@ function activityLabel(type: string) {
   return labels[type] ?? type.replaceAll("_", " ");
 }
 
+function snapshotWithPlannerFallback(current: Snapshot, planner: PlannerState): Snapshot {
+  let agentPayload: Record<string, unknown> = {};
+  try {
+    agentPayload = planner.agentStatus?.payload
+      ? JSON.parse(planner.agentStatus.payload) as Record<string, unknown>
+      : {};
+  } catch {
+    agentPayload = {};
+  }
+  const followers = Number(planner.totals.followers ?? planner.lastImport?.followers_count ?? agentPayload.followers ?? 0);
+  const following = Number(planner.totals.following ?? planner.lastImport?.following_count ?? agentPayload.following ?? 0);
+  const username = typeof agentPayload.username === "string" ? agentPayload.username : null;
+  const localAccount: SocialAccount | null = planner.agentStatus || planner.lastImport ? {
+    id: "local-instagram-agent",
+    platform: "instagram",
+    displayName: username ? `@${username.replace(/^@/, "")}` : "Instagram",
+    username,
+    followers,
+    followsCount: following,
+    mediaCount: null,
+    syncStatus: "live",
+    capabilities: { profile: true, comments: false, relationships: true, insights: false },
+    updatedAt: planner.agentStatus?.created_at ?? planner.lastImport?.imported_at ?? new Date().toISOString(),
+  } : null;
+  return {
+    ...current,
+    accounts: current.accounts.length ? current.accounts : localAccount ? [localAccount] : [],
+    metrics: {
+      ...current.metrics,
+      connectedAccounts: Math.max(current.metrics.connectedAccounts, localAccount ? 1 : 0),
+      knownFollowers: Math.max(current.metrics.knownFollowers, followers),
+      analyzedPeople: Math.max(current.metrics.analyzedPeople, Number(planner.totals.targets ?? 0)),
+    },
+    capabilities: localAccount && !current.accounts.length
+      ? { ...current.capabilities, profile: true, relationships: true }
+      : current.capabilities,
+    lastSync: current.lastSync ?? planner.agentStatus?.created_at ?? planner.lastImport?.imported_at ?? null,
+  };
+}
+
 async function usernamesFromInstagramFile(file: File) {
   const text = await file.text();
   const usernames = new Set<string>();
@@ -267,8 +307,29 @@ export default function Home() {
   }, []);
 
   const refresh = useCallback(async (manual = false) => {
+    let storedDataLoaded = false;
+    let metaLoaded = false;
+    let storedError = "";
     try {
       if (manual) setLoading(true);
+      const storedResults = await Promise.allSettled([
+        fetch("/api/growth", { cache: "no-store" }),
+        fetch("/api/planner", { cache: "no-store" }),
+      ]);
+      const growthResult = storedResults[0];
+      if (growthResult.status === "fulfilled" && growthResult.value.ok) {
+        applyGrowthState(await growthResult.value.json() as GrowthState);
+        storedDataLoaded = true;
+      }
+      const plannerResult = storedResults[1];
+      if (plannerResult.status === "fulfilled" && plannerResult.value.ok) {
+        const storedPlanner = await plannerResult.value.json() as PlannerState;
+        setPlanner(storedPlanner);
+        setSnapshot((current) => snapshotWithPlannerFallback(current, storedPlanner));
+        storedDataLoaded = true;
+      }
+      if (!storedDataLoaded) storedError = "Dati Orbit temporaneamente non disponibili";
+
       const sessionResponse = await fetch("/api/meta/snapshot", { cache: "no-store" });
       const session = await sessionResponse.json() as { gatewayUrl?: string; accessToken?: string; error?: string };
       if (!sessionResponse.ok || !session.gatewayUrl || !session.accessToken) {
@@ -281,6 +342,7 @@ export default function Home() {
       const body = await response.json() as Snapshot & { error?: string };
       if (!response.ok) throw new Error(body.error ?? "Sincronizzazione non disponibile");
       setSnapshot(body);
+      metaLoaded = true;
       setSyncError("");
 
       const candidatePayload = body.opportunities.map((candidate) => ({
@@ -318,10 +380,11 @@ export default function Home() {
       })]);
       if (growthResponse.ok) applyGrowthState(await growthResponse.json() as GrowthState);
       if (plannerResponse.ok) setPlanner(await plannerResponse.json() as PlannerState);
-      if (manual) notify("Piano operativo di oggi aggiornato");
     } catch (error) {
-      setSyncError(error instanceof Error ? error.message : "Sincronizzazione non disponibile");
+      const metaError = error instanceof Error ? error.message : "Sincronizzazione Meta non disponibile";
+      setSyncError(storedDataLoaded ? `Meta non disponibile · dati Orbit caricati` : storedError || metaError);
     } finally {
+      if (manual) notify(metaLoaded ? "Piano operativo e dati Meta aggiornati" : storedDataLoaded ? "Piano operativo Orbit aggiornato" : "Aggiornamento non disponibile");
       setLoading(false);
     }
   }, [applyGrowthState, notify]);
