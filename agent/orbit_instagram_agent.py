@@ -312,6 +312,9 @@ def login_with_browser(username: str, config_path: Path) -> InstagramWebSession:
     browser_profile = config_path.parent / ".orbit-agent" / "edge-profile"
     browser_profile.mkdir(parents=True, exist_ok=True)
     session_id = ""
+    last_mismatch = ""
+    last_checked_cookie = ""
+    last_verify_at = 0.0
     print("Si apre Microsoft Edge: completa l'accesso Instagram nel browser.")
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
@@ -327,9 +330,26 @@ def login_with_browser(username: str, config_path: Path) -> InstagramWebSession:
         while time.time() < deadline:
             cookies = context.cookies(["https://www.instagram.com"])
             cookie = next((item for item in cookies if item.get("name") == "sessionid"), None)
-            if cookie and cookie.get("value"):
-                session_id = str(cookie["value"])
-                break
+            cookie_value = str(cookie.get("value") or "") if cookie else ""
+            if cookie_value and (cookie_value != last_checked_cookie or time.time() - last_verify_at >= 8):
+                last_checked_cookie = cookie_value
+                last_verify_at = time.time()
+                try:
+                    response = context.request.get(
+                        "https://www.instagram.com/api/v1/accounts/current_user/?edit=true",
+                        headers={"X-IG-App-ID": INSTAGRAM_WEB_APP_ID, "Accept": "application/json"},
+                        timeout=10_000,
+                    )
+                    identity = response.json() if response.ok else {}
+                    actual = str((identity.get("user") or {}).get("username") or "").lower()
+                except (ValueError, TypeError):
+                    actual = ""
+                if actual == username.lower():
+                    session_id = cookie_value
+                    break
+                if actual and actual != last_mismatch:
+                    print(f"Profilo attivo @{actual}; seleziona @{username} nel browser. Nessuna sessione errata sarà salvata.")
+                    last_mismatch = actual
             page.wait_for_timeout(1000)
         context.close()
     if not session_id:
@@ -356,7 +376,18 @@ def login_saved(config: dict[str, str], config_path: Path) -> Any:
     if not saved_session_id and not password:
         raise RuntimeError("Credenziale locale assente. Esegui di nuovo agent/setup.ps1.")
     if saved_session_id:
-        return web_client_from_session_id(saved_session_id, username)
+        client = web_client_from_session_id(saved_session_id, username)
+        identity = client._json_get(
+            "/api/v1/accounts/current_user/", {"edit": "true"},
+            "https://www.instagram.com/accounts/edit/",
+        )
+        actual = str((identity.get("user") or {}).get("username") or "").lower()
+        if actual != username.lower():
+            raise RuntimeError(
+                f"Sessione Instagram attiva per @{actual or 'sconosciuto'}, atteso @{username}. "
+                "Nessun dato o azione sincronizzati."
+            )
+        return client
 
     settings_file = session_path(config_path)
     client = Client()

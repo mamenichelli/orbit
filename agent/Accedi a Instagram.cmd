@@ -1,8 +1,8 @@
 @echo off
 setlocal
-set "ORBIT_PY=%~dp0..\.venv-agent\Scripts\python.exe"
-set "ORBIT_AGENT=%~dp0orbit_instagram_agent.py"
-set "ORBIT_CONFIG=%~dp0..\.env.agent"
+set "ORBIT_PY=C:\Users\marco.menichelli\Documents\Social\.venv-agent\Scripts\python.exe"
+set "ORBIT_AGENT=C:\Users\marco.menichelli\Documents\Social\agent\orbit_instagram_agent.py"
+set "ORBIT_CONFIG=C:\Users\marco.menichelli\Documents\Social\.env.agent"
 if not exist "%ORBIT_PY%" (
   echo Python agente non trovato: "%ORBIT_PY%"
   pause

@@ -14,7 +14,7 @@ import keyring
 import requests
 from playwright.sync_api import sync_playwright
 
-from orbit_instagram_agent import KEYRING_SERVICE, gateway_headers, load_config, required
+from orbit_instagram_agent import KEYRING_SERVICE, INSTAGRAM_WEB_APP_ID, gateway_headers, load_config, required
 
 
 POST_PATH = re.compile(r"^/p/([A-Za-z0-9_-]+)/?$")
@@ -99,6 +99,26 @@ def checked_navigation(page, url: str) -> None:
         raise RuntimeError("Sessione Instagram scaduta: accedi di nuovo nel profilo Edge dell'agente")
 
 
+def assert_account(context, expected_username: str) -> None:
+    """Fail closed if the browser is signed in as Primezone or any other account."""
+    response = context.request.get(
+        "https://www.instagram.com/api/v1/accounts/current_user/?edit=true",
+        headers={"X-IG-App-ID": INSTAGRAM_WEB_APP_ID, "Accept": "application/json"},
+        timeout=20_000,
+    )
+    if not response.ok:
+        raise RuntimeError("Impossibile verificare il profilo Instagram attivo: nessuna azione eseguita")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Identità Instagram non verificabile: nessuna azione eseguita") from exc
+    user = payload.get("user") or payload.get("data", {}).get("user") or {}
+    actual = str(user.get("username") or "").lower()
+    if actual != expected_username.lower():
+        raise RuntimeError(
+            f"Profilo attivo @{actual or 'sconosciuto'}, atteso @{expected_username}: nessuna azione eseguita")
+
+
 def general_conversations(page) -> list[str]:
     checked_navigation(page, "https://www.instagram.com/direct/inbox/")
     general = page.get_by_role("tab", name=re.compile(r"Generali|General", re.I))
@@ -156,6 +176,7 @@ def run_likes(config_path: Path) -> None:
         context, browser = browser_context(playwright, config_path, config)
         page = context.pages[0] if context.pages else context.new_page()
         try:
+            assert_account(context, required(config, "ORBIT_INSTAGRAM_USERNAME"))
             conversations = general_conversations(page)
             post_ids: set[str] = set()
             for conversation in conversations:
@@ -196,8 +217,8 @@ def due_unfollows(planner: dict, protected: set[str], cache: dict) -> list[dict]
             imported_at = imported_at.replace(tzinfo=timezone.utc)
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError("Data sincronizzazione dashboard non valida") from exc
-    if abs(imported_at.timestamp() - int(cache["cachedAt"])) > 1800:
-        raise RuntimeError("Snapshot dashboard diverso da quello locale: defollow bloccato")
+    if imported_at.timestamp() + 300 < int(cache["cachedAt"]):
+        raise RuntimeError("Snapshot dashboard più vecchio della cache locale: defollow bloccato")
     if int(last_import.get("followers_count", -1)) != len(followers) or int(last_import.get("following_count", -1)) != len(following):
         raise RuntimeError("Cache locale e dashboard non coincidono: defollow bloccato")
     result = []
@@ -253,6 +274,7 @@ def run_unfollows(config_path: Path) -> None:
         context, browser = browser_context(playwright, config_path, config)
         page = context.pages[0] if context.pages else context.new_page()
         try:
+            assert_account(context, required(config, "ORBIT_INSTAGRAM_USERNAME"))
             completed = 0
             for action in candidates[:20]:
                 username = action["username"]
