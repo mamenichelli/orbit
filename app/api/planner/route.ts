@@ -206,7 +206,7 @@ async function importRelations(followers: string[], following: string[]) {
     const statements = usernames.slice(offset, offset + 40).map((username) => {
       const followsYou = followerSet.has(username) ? 1 : 0;
       const youFollow = followingSet.has(username) ? 1 : 0;
-      const reviewAfter = youFollow && !followsYou ? new Date().toISOString() : null;
+      const reviewAfter = youFollow && !followsYou ? new Date(Date.now() + 10 * 86_400_000).toISOString() : null;
       return env.DB.prepare(`INSERT INTO growth_targets
         (external_id, username, display_name, platform, profile_url, source, interactions, score,
          follows_you, you_follow, previous_follows_you, relation_batch, review_after, updated_at)
@@ -317,7 +317,8 @@ async function generateToday() {
         WHERE t.external_id = daily_actions.external_id
           AND (COALESCE(t.you_follow, 0) <> 1
             OR COALESCE(t.follows_you, 0) = 1
-            OR t.unfollowed_you_at IS NULL)
+            OR EXISTS (SELECT 1 FROM protected_profiles p
+              WHERE p.external_id IN (t.external_id, 'ig:' || t.username, 'username:' || t.username)))
       )`).run();
   await env.DB.prepare(`UPDATE daily_actions SET status = 'invalid'
     WHERE action_date = ? AND status = 'pending' AND action_type IN ('follow', 'follow_back')
@@ -418,15 +419,15 @@ async function generateToday() {
   await env.DB.prepare(`INSERT OR IGNORE INTO daily_actions
     (action_date, external_id, action_type, probability, reason)
     SELECT ?, t.external_id, 'unfollow', 95,
-      'Ti ha defollowato, tu lo segui ancora e il profilo non è protetto'
+      'Non ti segue dopo 10 giorni e il profilo non è protetto'
     FROM growth_targets t
-    LEFT JOIN protected_profiles p ON p.external_id = t.external_id
+    LEFT JOIN protected_profiles p ON p.external_id IN (t.external_id, 'ig:' || t.username, 'username:' || t.username)
     WHERE t.you_follow = 1
       AND t.follows_you = 0
-      AND t.unfollowed_you_at IS NOT NULL
       AND p.external_id IS NULL
       AND t.review_after IS NOT NULL
       AND datetime(t.review_after) <= datetime('now')
+      AND datetime(COALESCE(t.followed_at, t.first_seen_at), '+10 days') <= datetime('now')
     ORDER BY t.review_after ASC, t.score ASC
     LIMIT ?`).bind(date, settings.unfollows_per_day).run();
 
@@ -454,8 +455,7 @@ async function completeAction(id: number) {
   await env.DB.prepare("UPDATE daily_actions SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?")
     .bind(id).run();
   if (action.action_type === "follow" || action.action_type === "follow_back") {
-    const settings = await readSettings();
-    const reviewAfter = new Date(Date.now() + settings.review_days * 86_400_000).toISOString();
+    const reviewAfter = new Date(Date.now() + 10 * 86_400_000).toISOString();
     await env.DB.prepare(`UPDATE growth_targets SET you_follow = 1, followed_at = CURRENT_TIMESTAMP,
       review_after = ?, updated_at = CURRENT_TIMESTAMP WHERE external_id = ?`)
       .bind(reviewAfter, action.external_id).run();
@@ -514,7 +514,11 @@ async function readPlanner() {
         AND (a.action_type <> 'unfollow'
           OR (COALESCE(t.you_follow, 0) = 1
             AND COALESCE(t.follows_you, 0) = 0
-            AND t.unfollowed_you_at IS NOT NULL))
+            AND t.review_after IS NOT NULL
+            AND datetime(t.review_after) <= datetime('now')
+            AND datetime(COALESCE(t.followed_at, t.first_seen_at), '+10 days') <= datetime('now')
+            AND NOT EXISTS (SELECT 1 FROM protected_profiles p
+              WHERE p.external_id IN (t.external_id, 'ig:' || t.username, 'username:' || t.username))))
         AND (a.action_type <> 'lost_follower'
           OR (COALESCE(t.follows_you, 0) = 0 AND t.unfollowed_you_at IS NOT NULL))
       ORDER BY CASE a.action_type WHEN 'follow' THEN 1 WHEN 'follow_back' THEN 1

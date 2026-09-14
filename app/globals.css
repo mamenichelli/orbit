@@ -77,6 +77,10 @@ h1,h2 { font-family:"Manrope",sans-serif; margin:0; letter-spacing:-.5px; } h1{f
   .module-grid{grid-template-columns:1fr}
   .daily-grid{grid-template-columns:1fr 1fr}.daily-hero{grid-template-columns:1fr auto}.daily-summary{grid-column:1/-1}.today-footer-grid{grid-template-columns:1fr 1fr}
 }
+.protected-panel label{display:grid;gap:6px;margin:14px 0 8px;font-size:10px;color:var(--muted)}
+.protected-panel textarea{width:100%;resize:vertical;border:1px solid #dce5e1;border-radius:8px;padding:10px;background:white;color:var(--ink);font:inherit;font-size:11px}
+.protected-panel input[type=file]{max-width:100%;font-size:10px;margin-bottom:10px}
+.protected-panel>.primary{margin-bottom:14px}
 @media(max-width:760px){
   .strategy-live,.opportunities-focus .right-stack{grid-template-columns:1fr}
   .permission-banner{align-items:flex-start;flex-direction:column}.permission-banner a{width:100%;text-align:center}.media-row{grid-template-columns:28px minmax(0,1fr) auto}.media-stats{display:none!important}.module-grid{grid-template-columns:1fr}

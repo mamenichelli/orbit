@@ -12,6 +12,11 @@ type CandidateInput = {
   youFollow?: boolean | null;
 };
 
+function cleanInstagramUsername(value: string) {
+  const username = value.trim().replace(/^@/, "").toLowerCase();
+  return /^[a-z0-9._]{1,30}$/.test(username) ? username : null;
+}
+
 async function ensureSchema() {
   const db = env.DB;
   await db.batch([
@@ -139,16 +144,31 @@ export async function GET() {
 export async function POST(request: Request) {
   await ensureSchema();
   const body = await request.json() as {
-    operation?: "protect" | "unprotect" | "approve" | "complete" | "sync";
+    operation?: "protect" | "unprotect" | "protect_bulk" | "approve" | "complete" | "sync";
     externalId?: string;
     displayName?: string;
     platform?: string;
     candidates?: CandidateInput[];
+    usernames?: string[];
   };
 
   if (body.operation === "sync") {
     await syncCandidates(Array.isArray(body.candidates) ? body.candidates : []);
     return Response.json({ ok: true, ...(await readState()) });
+  }
+  if (body.operation === "protect_bulk") {
+    if (!Array.isArray(body.usernames) || body.usernames.length > 2000) {
+      return Response.json({ error: "Lista intoccabili non valida" }, { status: 400 });
+    }
+    const usernames = [...new Set(body.usernames.map((item) => cleanInstagramUsername(String(item))).filter((item): item is string => Boolean(item)))];
+    for (let offset = 0; offset < usernames.length; offset += 40) {
+      await env.DB.batch(usernames.slice(offset, offset + 40).map((username) => env.DB.prepare(
+        `INSERT INTO protected_profiles (external_id, display_name, platform, reason)
+         VALUES (?, ?, 'Instagram', 'Importato dall’utente')
+         ON CONFLICT(external_id) DO NOTHING`,
+      ).bind(`ig:${username}`, `@${username}`)));
+    }
+    return Response.json({ ok: true, imported: usernames.length, ...(await readState()) });
   }
   if (!body.operation || !body.externalId) {
     return Response.json({ error: "Dati mancanti" }, { status: 400 });

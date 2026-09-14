@@ -283,6 +283,7 @@ export default function Home() {
   const [targetUsername, setTargetUsername] = useState("");
   const [targetSource, setTargetSource] = useState("exchange_group");
   const [targetDetail, setTargetDetail] = useState("");
+  const [protectedInput, setProtectedInput] = useState("");
   const [importFollowers, setImportFollowers] = useState<string[] | null>(null);
   const [importFollowing, setImportFollowing] = useState<string[] | null>(null);
   const [showConfig, setShowConfig] = useState(false);
@@ -473,6 +474,26 @@ export default function Home() {
       following: importFollowing,
     }, `Confronto completato: ${importFollowers.length} follower e ${importFollowing.length} seguiti`);
     if (ok) setActive("Oggi");
+  };
+
+  const addProtectedUsernames = async () => {
+    const usernames = [...new Set(protectedInput.split(/[\s,;]+/).map((value) => value.trim().replace(/^@/, "").toLowerCase()).filter((value) => /^[a-z0-9._]{1,30}$/.test(value)))];
+    if (!usernames.length) return notify("Inserisci almeno un username Instagram valido");
+    try {
+      const response = await fetch("/api/growth", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ operation: "protect_bulk", usernames }),
+      });
+      const result = await response.json() as GrowthState & { error?: string; imported?: number };
+      if (!response.ok) throw new Error(result.error ?? "Importazione non riuscita");
+      applyGrowthState(result);
+      setProtectedInput("");
+      notify(`${result.imported ?? usernames.length} intoccabili salvati`);
+      void refresh();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Importazione non riuscita");
+    }
   };
 
   const protectedIds = useMemo(
@@ -712,7 +733,7 @@ export default function Home() {
           <section className="module-grid">
             <article className="panel review-queue">
               <div className="panel-head"><div><p className="eyebrow">REVISIONE OGNI 10 GIORNI</p><h2>Coda relazioni</h2></div><span className="trend">{growth.review.queued} azioni</span></div>
-              <p className="muted">Orbit crea automaticamente la coda e rimuove gli intoccabili. Tu confermi l’azione sul profilo Instagram.</p>
+              <p className="muted">Dopo 10 giorni senza follow-back, l’agente esegue il defollow nel browser. Gli intoccabili restano esclusi.</p>
               {!growth.queue.length && <div className="all-done">Nessuna relazione da revisionare in questo momento.</div>}
               {growth.queue.slice(0, 30).map((item) => (
                 <div className="queue-row" key={`${item.action_type}-${item.external_id}-${item.created_at}`}>
@@ -724,6 +745,9 @@ export default function Home() {
             </article>
             <article className="panel protected-panel">
               <div className="panel-head"><div><p className="eyebrow">SEMPRE ESCLUSI</p><h2>Intoccabili</h2></div><span className="live-pill">{growth.protectedProfiles.length}</span></div>
+              <label><span>Incolla uno o più @username, oppure carica un file TXT</span><textarea value={protectedInput} onChange={(event) => setProtectedInput(event.target.value)} rows={4} placeholder="@username, uno per riga" /></label>
+              <input type="file" accept=".txt,.csv" aria-label="Carica lista intoccabili" onChange={(event) => { const file = event.target.files?.[0]; if (file) void file.text().then((value) => setProtectedInput(value)); }} />
+              <button className="primary" disabled={!protectedInput.trim()} onClick={() => void addProtectedUsernames()}>Aggiungi intoccabili</button>
               {!growth.protectedProfiles.length && <p className="account-empty">Premi ♧ accanto a una persona per proteggerla.</p>}
               {growth.protectedProfiles.map((profile) => (
                 <div className="protected-row" key={profile.external_id}><span className="avatar mini">{initials(profile.display_name)}</span><div><strong>{profile.display_name}</strong><small>{profile.platform} · dal {formatDate(profile.created_at)}</small></div><button className="text-button" onClick={() => void persist("unprotect", { external_id: profile.external_id, display_name: profile.display_name, platform: profile.platform, action_type: "", status: "", created_at: profile.created_at })}>Rimuovi</button></div>
@@ -811,7 +835,7 @@ export default function Home() {
               </div>
               <button className="secondary" onClick={() => void plannerRequest({ operation: "settings", settings: { followsPerDay: planner.settings.follows_per_day, unfollowsPerDay: planner.settings.unfollows_per_day, reviewDays: planner.settings.review_days } }, "Quote giornaliere salvate")}>Salva quote</button>
             </div>
-            <div className="safety-note"><strong>Automazione conforme</strong><span>Analisi, ranking, revisione e priorità sono automatici. Follow, unfollow e like personali non sono disponibili nelle API ufficiali e restano azioni guidate.</span></div>
+            <div className="safety-note"><strong>Azioni browser</strong><span>L’agente locale mette like ai post condivisi nelle chat di Generali ed esegue i defollow dovuti solo con sessione valida e relazioni aggiornate.</span></div>
           </section>
         </div>
       )}

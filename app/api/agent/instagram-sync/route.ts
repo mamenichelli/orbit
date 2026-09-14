@@ -68,7 +68,7 @@ async function importRelations(followerValues: string[], followingValues: string
     const statements = usernames.slice(offset, offset + 40).map((username) => {
       const followsYou = followers.has(username) ? 1 : 0;
       const youFollow = following.has(username) ? 1 : 0;
-      const reviewAfter = youFollow && !followsYou ? new Date().toISOString() : null;
+      const reviewAfter = youFollow && !followsYou ? new Date(Date.now() + 10 * 86_400_000).toISOString() : null;
       return env.DB.prepare(`INSERT INTO growth_targets
         (external_id, username, display_name, platform, profile_url, source, interactions, score,
          follows_you, you_follow, previous_follows_you, relation_batch, review_after, updated_at)
