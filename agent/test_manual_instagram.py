@@ -1,8 +1,14 @@
 import time
 import unittest
-from orbit_manual_instagram import valid_job
+from orbit_manual_instagram import valid_job, assert_general
 
 class ManualIntentTests(unittest.TestCase):
+    def test_principal_or_uncertain_folder_is_rejected(self):
+        class Page:
+            def __init__(self, selected): self.selected = selected
+            def evaluate(self, script): return self.selected
+        assert_general(Page(True))
+        with self.assertRaises(RuntimeError): assert_general(Page(False))
     def test_only_recent_single_command(self):
         job = {"id": "test", "shortcode": "ABC_123", "requested_at": time.time() * 1000}
         self.assertTrue(valid_job(job))

@@ -1,5 +1,5 @@
 import { getRawDb } from "@/db";
-import { instagramAccount, manualAgentOnline } from "@/app/instagram-manual";
+import { instagramAccount, manualAgentOnline, generalPostPredicate } from "@/app/instagram-manual";
 
 export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
@@ -25,7 +25,7 @@ export async function POST(request: Request) {
   const prior = await db.prepare("SELECT id, shortcode, status FROM instagram_manual_likes WHERE id = ? AND requested_by = ?").bind(body.id, user).first();
   if (prior) return Response.json(prior);
   if (!(await manualAgentOnline())) return Response.json({ error: "Agente Instagram offline: il PC deve essere acceso e la sessione verificata" }, { status: 503 });
-  const post = await db.prepare("SELECT status FROM browser_like_events WHERE account_username = ? AND shortcode = ?").bind(instagramAccount, body.shortcode).first<{ status: string }>();
+  const post = await db.prepare(`SELECT status FROM browser_like_events WHERE account_username = ? AND shortcode = ? AND ${generalPostPredicate}`).bind(instagramAccount, body.shortcode).first<{ status: string }>();
   if (!post) return Response.json({ error: "Post non presente nell’elenco" }, { status: 404 });
   if (["applied", "already_liked"].includes(post.status)) return Response.json({ error: "Like già confermato" }, { status: 409 });
   // Atomic partial uniqueness prevents parallel clicks from becoming a batch.

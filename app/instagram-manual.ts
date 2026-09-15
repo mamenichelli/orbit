@@ -1,6 +1,8 @@
 import { getRawDb } from "@/db";
 
 export const instagramAccount = process.env.ORBIT_INSTAGRAM_USERNAME ?? "ma.menichelli";
+// Keep uncertain historic records in storage, but exclude them from the General feed.
+export const generalPostPredicate = "EXISTS (SELECT 1 FROM json_each(browser_like_events.groups_json) AS origin WHERE json_extract(origin.value, '$.folder') = 'general')";
 export async function isInstagramAgent(request: Request) {
   const expected = process.env.ORBIT_AGENT_TOKEN ?? "";
   const actual = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "";

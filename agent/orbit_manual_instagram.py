@@ -9,9 +9,10 @@ import logging
 from pathlib import Path
 import re
 import time
+import requests
 from urllib.parse import urlparse
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
 from orbit_instagram_agent import load_config, required
 from orbit_browser_actions import (assert_account, browser_context, checked_navigation,
     conversation_title, gateway_post, like_post, mark_thread_rows, post_id,
@@ -24,12 +25,17 @@ def run_worker(config_path):
         context, browser = browser_context(p, config_path, config)
         try:
             page = context.new_page()
-            checked_navigation(page, "https://www.instagram.com/")
+            logging.info("Avvio collegamento manuale")
             while True:
                 # Do not advertise online unless the account identity has just been checked.
                 assert_account(context, required(config, "ORBIT_INSTAGRAM_USERNAME"))
-                result = gateway_post(config, "/api/agent/instagram-manual", {
-                    "action": "claim", "accountUsername": required(config, "ORBIT_INSTAGRAM_USERNAME")})
+                try:
+                    result = gateway_post(config, "/api/agent/instagram-manual", {
+                        "action": "claim", "accountUsername": required(config, "ORBIT_INSTAGRAM_USERNAME")})
+                except requests.RequestException:
+                    logging.warning("Rete Orbit non disponibile: attendo senza eseguire azioni")
+                    time.sleep(10)
+                    continue
                 job = result.get("job")
                 if not job:
                     time.sleep(5)
@@ -75,22 +81,52 @@ def scroll_chat(page):
     }''')
 
 
+def general_selected(page):
+    return page.evaluate('''() => {
+      const selected=Array.from(document.querySelectorAll('[role="tab"]')).filter(n=>n.getAttribute('aria-selected')==='true');
+      return selected.length===1 && /^(General|Generali|Generale)$/i.test(selected[0].innerText.trim());
+    }''')
+
+
+def assert_general(page):
+    if not general_selected(page):
+        raise RuntimeError("Scheda Generale non confermata: raccolta fermata, nessun post di Principale importato")
+
+
+def select_general(page):
+    tab = page.get_by_role("tab", name=re.compile(r"^General$|^Generali$|^Generale$", re.I))
+    tab.first.wait_for(state="visible", timeout=30000)
+    if not general_selected(page):
+        tab.first.click()
+        deadline = time.monotonic() + 15
+        while not general_selected(page) and time.monotonic() < deadline:
+            page.wait_for_timeout(250)
+        page.wait_for_timeout(2500)
+    assert_general(page)
+
+
 def read_visible_posts(page):
     """Follow only actual Instagram /p/ links. Stories and file dialogs are ignored."""
+    assert_general(page)
     found = {pid: {} for href in page.locator('a[href*="/p/"]').evaluate_all(
         "nodes=>nodes.map(n=>n.getAttribute('href')||'')") if (pid := post_id(href))}
-    cards = page.evaluate('''() => {
+    def mark_cards():
+        return page.evaluate('''() => {
       document.querySelectorAll('[data-orbit-manual-card]').forEach(n=>n.removeAttribute('data-orbit-manual-card'));
       const tabs=document.querySelector('[role="tablist"]'); if(!tabs) return [];
       const edge=tabs.getBoundingClientRect().right;
       return Array.from(document.querySelectorAll('[role="button"]')).filter(n=>{
         const r=n.getBoundingClientRect(); return r.x>=edge && r.width>=150 && r.width<=450
           && r.height>=120 && n.querySelector('img');
-      }).map((n,i)=>{n.setAttribute('data-orbit-manual-card',i); return i;});
+      }).map((n,i)=>{n.setAttribute('data-orbit-manual-card',i); return {index:i,key:n.innerText+'|'+(n.querySelector('img')?.src||'').split('?')[0]};});
     }''')
+    cards = mark_cards()
     conversation_url = page.url
     preserved = True
-    for index in cards:
+    for item in cards:
+        match = next((card for card in mark_cards() if card["key"] == item["key"]), None)
+        if not match: continue
+        index = match["index"]
         before = list(page.context.pages)
         try:
             card = page.locator(f'[data-orbit-manual-card="{index}"]')
@@ -102,22 +138,36 @@ def read_visible_posts(page):
             target.wait_for_load_state("domcontentloaded", timeout=15000)
             if pid := post_id(target.url):
                 target.wait_for_timeout(1200)
-                found[pid] = target.evaluate('''() => ({
-                  caption:(document.querySelector('meta[property="og:description"]')?.content||document.querySelector('meta[property="og:title"]')?.content||'').slice(0,2000),
-                  previewUrl:document.querySelector('meta[property="og:image"]')?.content||''
-                })''')
+                found[pid] = target.evaluate('''() => {
+                  const root=document.querySelector('article')||document.querySelector('main');
+                  const image=root && Array.from(root.querySelectorAll('img')).find(n=>{
+                    const r=n.getBoundingClientRect(); return r.width>=200 && r.height>=180;
+                  });
+                  const caption=document.querySelector('meta[property="og:description"]')?.content
+                    ||root?.querySelector('h1')?.innerText||image?.alt||'';
+                  const candidate=document.querySelector('meta[property="og:image"]')?.content||image?.src||root?.querySelector('video')?.poster||'';
+                  let previewUrl=''; try {const u=new URL(candidate);if(u.protocol==='https:' && /(^|\\.)(cdninstagram\\.com|fbcdn\\.net)$/.test(u.hostname)) previewUrl=u.href;}catch{}
+                  return {caption:caption.slice(0,2000),previewUrl};
+                }''')
             if not opened:
                 # Unknown inline dialogs are not clicked. Stop history traversal after reset.
                 checked_navigation(page, conversation_url)
+                select_general(page)
+                page.wait_for_timeout(2000)
                 preserved = False
-                break
+        except BrowserTimeout:
+            print("Anteprima non caricata: post non importato senza verifica", flush=True)
+            checked_navigation(page, conversation_url)
+            select_general(page)
+            preserved = False
         finally:
             for tab in list(page.context.pages):
                 if tab not in before: tab.close()
+    assert_general(page)
     return found, preserved
 
 
-def collect(config_path, publish_approved=False):
+def collect(config_path, publish_approved=False, history_pages=40):
     config, state = load_config(config_path), load_state(config_path)
     groups = posts = 0
     with sync_playwright() as p:
@@ -126,9 +176,7 @@ def collect(config_path, publish_approved=False):
             assert_account(context, required(config, "ORBIT_INSTAGRAM_USERNAME"))
             page = context.new_page()
             checked_navigation(page, "https://www.instagram.com/direct/inbox/")
-            tab = page.get_by_role("tab", name=re.compile(r"^General$|^Generali$", re.I))
-            tab.first.wait_for(state="visible", timeout=30000)
-            tab.first.click()
+            select_general(page)
             deadline = time.monotonic() + 30
             while not mark_thread_rows(page) and time.monotonic() < deadline:
                 page.wait_for_timeout(1000)
@@ -136,29 +184,43 @@ def collect(config_path, publish_approved=False):
             visited = set()
             idle = 0
             for _ in range(80):
+                assert_general(page)
                 rows = mark_thread_rows(page)
                 new = [row for row in rows if row["key"] not in visited]
                 for row in new:
+                    assert_general(page)
                     current = mark_thread_rows(page)
                     match = next((r for r in current if r["key"] == row["key"]), None)
                     if not match: continue
-                    page.locator(f'[data-orbit-thread-row="{match["index"]}"]').click()
-                    page.wait_for_timeout(4000)
+                    before_url = page.url
+                    try:
+                        page.locator(f'[data-orbit-thread-row="{match["index"]}"]').click(timeout=10000)
+                    except BrowserTimeout:
+                        visited.add(row["key"])
+                        assert_general(page)
+                        continue
+                    try:
+                        page.wait_for_url(lambda url: str(url) != before_url and '/direct/t/' in str(url), timeout=10000)
+                    except Exception:
+                        visited.add(row["key"])
+                        print("Chat non cambiata: salto senza assegnare un gruppo errato", flush=True)
+                        continue
+                    page.wait_for_timeout(2500)
+                    select_general(page)
                     if not re.fullmatch(r"/direct/t/[^/]+/?", urlparse(page.url).path):
                         visited.add(row["key"])
                         print("Conversazione non verificata: salto senza azioni", flush=True)
                         continue
                     visited.add(row["key"])
-                    try:
-                        group = {"title": conversation_title(page), "threadPath": urlparse(page.url).path.rstrip("/") + "/"}
-                    except RuntimeError:
-                        print("Nome chat non verificato: salto senza azioni", flush=True)
-                        continue
+                    observed_title = str(row["key"]).splitlines()[0].strip()
+                    if not observed_title: continue
+                    group = {"title": observed_title[:200], "threadPath": urlparse(page.url).path.rstrip("/") + "/", "folder": "general"}
                     groups += 1
                     seen = set()
-                    for _ in range(40):
+                    for _ in range(history_pages):
                         found, preserved = read_visible_posts(page)
-                        for pid in found.keys() - seen:
+                        assert_general(page)
+                        for pid in found:
                             record_like_event(state, pid, [group], "discovered")
                             if found[pid]:
                                 state["likeEvents"][pid]["metadata"] = found[pid]
@@ -173,6 +235,7 @@ def collect(config_path, publish_approved=False):
                 idle = idle + 1 if not new else 0
                 if idle >= 3 or not rows: break
                 mark_thread_rows(page)
+                assert_general(page)
                 page.locator('[data-orbit-thread-row]').first.evaluate('''n=>{
                   for(let p=n.parentElement;p;p=p.parentElement) {
                     if(p.scrollHeight>p.clientHeight && /auto|scroll/.test(getComputedStyle(p).overflowY)) {
@@ -191,12 +254,13 @@ if __name__ == "__main__":
     parser.add_argument("command", choices=["worker", "collect"])
     parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parent.parent / ".env.agent")
     parser.add_argument("--publish-collected-posts", action="store_true", help="Export post references, group names and available previews to Orbit only after explicit authorization")
+    parser.add_argument("--history-pages", type=int, default=40)
     args = parser.parse_args()
     logging.basicConfig(filename=str(args.config.resolve().parent / ".orbit-agent" / "manual-agent.log"),
                         encoding="utf-8", level=logging.INFO, format="%(asctime)s %(message)s")
     try:
         if args.command == "worker": run_worker(args.config.resolve())
-        else: collect(args.config.resolve(), publish_approved=args.publish_collected_posts)
+        else: collect(args.config.resolve(), publish_approved=args.publish_collected_posts, history_pages=max(1, min(40, args.history_pages)))
     except Exception as exc:
         logging.error("Agente fermato: %s", type(exc).__name__)
         if isinstance(exc, RuntimeError): print(str(exc), flush=True)

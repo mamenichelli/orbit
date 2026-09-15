@@ -891,12 +891,12 @@ export default function Home() {
         )}
         {(active === "Oggi" || active === "Attività") && (
           <article className="panel like-history-panel">
-            <div className="panel-head"><div><p className="eyebrow">LIKE SCELTI DA TE · @{likeHistory?.accountUsername ?? "ma.menichelli"}</p><h2>Post dei contatti</h2></div><span className="daily-count">{formatNumber(likeHistory?.total ?? 0)}</span></div>
+            <div className="panel-head"><div><p className="eyebrow">SOLO GENERALE · @{likeHistory?.accountUsername ?? "ma.menichelli"}</p><h2>Post da Generale</h2></div><span className="daily-count">{formatNumber(likeHistory?.total ?? 0)}</span></div>
             <p className="like-history-note">Un clic su «Mi piace» agisce solo su quel post, senza uscire da Orbit. {likeHistory?.manualOnline ? "Collegamento Instagram attivo." : "Collegamento Instagram offline: accendi il PC e avvia l’agente manuale."}</p>
             {manualMessage && <p className="like-history-note" role="status">{manualMessage}</p>}
             {likeHistoryError && <p role="status" className="sync-error">{likeHistoryError}. I dati già caricati restano visibili.</p>}
             {!likeHistory && !likeHistoryError && <p className="like-history-note">Caricamento dello storico…</p>}
-            {likeHistory && !likeHistory.total && <p className="like-history-note">Nessun post raccolto. L’agente deve prima leggere le conversazioni Generali.</p>}
+            {likeHistory && !likeHistory.total && <p className="like-history-note">Nessun post verificato in Generale. I vecchi record senza provenienza verificata sono esclusi mentre la raccolta riparte.</p>}
             {likeHistory?.events.map(event => <div className="like-history-row" key={event.eventId}>
               <div className="like-history-result">
                 {event.metadata?.previewUrl && <img className="manual-post-preview" src={event.metadata.previewUrl} alt="Anteprima del post" loading="lazy" referrerPolicy="no-referrer" onError={e => { e.currentTarget.hidden = true; }} />}
