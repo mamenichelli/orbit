@@ -1,5 +1,5 @@
 import { getRawDb } from "@/db";
-import { manualAgentOnline, generalPostPredicate } from "@/app/instagram-manual";
+import { manualAgentOnline, visibleGeneralPostPredicate } from "@/app/instagram-manual";
 
 export const dynamic = "force-dynamic";
 const account = process.env.ORBIT_INSTAGRAM_USERNAME ?? "ma.menichelli";
@@ -15,7 +15,7 @@ async function agentAuthorized(request: Request) {
 }
 
 type Group = { title: string; threadPath: string; folder?: "general" };
-type LikeEvent = { eventId: string; shortcode: string; status: string; likedAt: string | null; observedAt: string; groups: Group[]; metadata?: { caption?: string; previewUrl?: string } };
+type LikeEvent = { eventId: string; shortcode: string; status: string; likedAt: string | null; observedAt: string; groups: Group[]; metadata?: { caption?: string; previewUrl?: string; authorUsername?: string; publishedAt?: string | null } };
 function safePreview(value: unknown) {
   if (value === undefined || value === "") return true;
   try { const url = new URL(String(value)); return url.protocol === "https:" && !url.username && !url.password && ["cdninstagram.com", "fbcdn.net"].some(domain => url.hostname === domain || url.hostname.endsWith(`.${domain}`)); } catch { return false; }
@@ -43,6 +43,8 @@ export async function POST(request: Request) {
       || !["applied", "already_liked", "legacy", "discovered"].includes(event.status)
       || !validDate(event.observedAt)
       || (event.metadata !== undefined && (!event.metadata || typeof event.metadata.caption !== "string" || event.metadata.caption.length > 2000 || !safePreview(event.metadata.previewUrl)))
+      || (event.metadata?.authorUsername !== undefined && event.metadata.authorUsername !== "" && !/^[a-zA-Z0-9._]{1,30}$/.test(event.metadata.authorUsername))
+      || (event.metadata?.publishedAt !== undefined && event.metadata.publishedAt !== null && !validDate(event.metadata.publishedAt))
       || (event.status === "applied" ? !validDate(event.likedAt) : event.likedAt !== null)
       || !Array.isArray(event.groups) || event.groups.length > 50
       || event.groups.some(group => !group || typeof group.title !== "string" || !group.title.trim()
@@ -77,18 +79,19 @@ export async function GET(request: Request) {
     const db = getRawDb();
     const [rows, counts] = await Promise.all([
       db.prepare(`SELECT event_id, shortcode, status, liked_at, observed_at, groups_json, metadata_json
-        FROM browser_like_events WHERE account_username = ? AND ${generalPostPredicate}
+        FROM browser_like_events WHERE account_username = ? AND ${visibleGeneralPostPredicate}
         ORDER BY COALESCE(liked_at, observed_at) DESC, event_id DESC LIMIT 20 OFFSET ?`)
         .bind(account, (page - 1) * 20).all<{ event_id: string; shortcode: string; status: string; liked_at: string | null; observed_at: string; groups_json: string; metadata_json: string }>(),
       db.prepare(`SELECT COUNT(*) AS total, SUM(status = 'applied') AS applied
-        FROM browser_like_events WHERE account_username = ? AND ${generalPostPredicate}`).bind(account).first<{ total: number; applied: number | null }>(),
+        FROM browser_like_events WHERE account_username = ? AND ${visibleGeneralPostPredicate}`).bind(account).first<{ total: number; applied: number | null }>(),
     ]);
     return Response.json({
       accountUsername: account, page, pageSize: 20, total: counts?.total ?? 0, applied: counts?.applied ?? 0,
       manualOnline: await manualAgentOnline(),
       events: (rows.results ?? []).map(row => ({ eventId: row.event_id, shortcode: row.shortcode,
         status: row.status, likedAt: row.liked_at, observedAt: row.observed_at,
-        groups: (JSON.parse(row.groups_json) as Group[]).filter(group => group.folder === "general"), metadata: JSON.parse(row.metadata_json) })),
+        groups: (JSON.parse(row.groups_json) as Group[]).filter(group => group.folder === "general"),
+        metadata: (() => { const metadata = JSON.parse(row.metadata_json); return { authorUsername: metadata.authorUsername ?? "", publishedAt: metadata.publishedAt ?? null }; })() })),
     }, { headers: { "cache-control": "no-store" } });
   } catch {
     return Response.json({ error: "Storico like temporaneamente non disponibile" }, { status: 503 });

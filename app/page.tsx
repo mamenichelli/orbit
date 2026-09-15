@@ -98,7 +98,7 @@ type AuditItem = { id: number; event_type: string; payload: string; created_at: 
 type LikeHistory = {
   accountUsername: string; page: number; pageSize: number; total: number; applied: number; manualOnline: boolean;
   events: { eventId: string; shortcode: string; status: "applied" | "already_liked" | "legacy" | "discovered";
-    likedAt: string | null; observedAt: string; groups: { title: string; threadPath: string }[]; metadata?: { caption?: string; previewUrl?: string } }[];
+    likedAt: string | null; observedAt: string; groups: { title: string; threadPath: string }[]; metadata?: { authorUsername?: string; publishedAt?: string | null } }[];
 };
 
 function likeDate(value: string) {
@@ -336,7 +336,7 @@ export default function Home() {
         if (stopped) return;
         if (["applied", "already_liked", "failed"].includes(result.status)) {
           setManualMessage(result.status === "applied" ? "Mi piace confermato su @ma.menichelli" : result.status === "already_liked" ? "Il tuo Mi piace era già presente" : result.message || "Like non confermato");
-          if (result.status !== "failed") setLikeHistory(current => current ? { ...current, events: current.events.map(event => event.shortcode === manualLike.shortcode ? { ...event, status: result.status, likedAt: result.status === "applied" ? new Date().toISOString() : null } : event) } : current);
+          if (result.status !== "failed") setLikeHistory(current => current ? { ...current, total: Math.max(0, current.total - 1), events: current.events.filter(event => event.shortcode !== manualLike.shortcode) } : current);
           setManualLike(null);
         } else if (Date.now() - started > 130_000) {
           setManualMessage("Conferma non ricevuta: controlla il post prima di riprovare"); setManualLike(null);
@@ -365,6 +365,10 @@ export default function Home() {
     const timer = window.setInterval(() => void load(), 30_000);
     return () => { controller.abort(); window.clearInterval(timer); };
   }, [likePage]);
+
+  useEffect(() => {
+    if (likeHistory) setLikePage(page => Math.min(page, Math.max(1, Math.ceil(likeHistory.total / 20))));
+  }, [likeHistory?.total]);
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -899,12 +903,10 @@ export default function Home() {
             {likeHistory && !likeHistory.total && <p className="like-history-note">Nessun post verificato in Generale. I vecchi record senza provenienza verificata sono esclusi mentre la raccolta riparte.</p>}
             {likeHistory?.events.map(event => <div className="like-history-row" key={event.eventId}>
               <div className="like-history-result">
-                {event.metadata?.previewUrl && <img className="manual-post-preview" src={event.metadata.previewUrl} alt="Anteprima del post" loading="lazy" referrerPolicy="no-referrer" onError={e => { e.currentTarget.hidden = true; }} />}
-                {event.metadata?.caption && <p className="manual-post-caption">{event.metadata.caption}</p>}
-                <strong>{event.status === "applied" ? "Like eseguito" : event.status === "already_liked" ? "Like già presente · non ripetuto" : event.status === "discovered" ? `Post ${event.shortcode}` : "Registro precedente"}</strong>
-                {event.likedAt ? <time dateTime={event.likedAt}>{likeDate(event.likedAt)}</time>
-                  : event.status === "already_liked" ? <span>Verificato il {likeDate(event.observedAt)} · ora del like originale sconosciuta</span>
-                  : <span>{event.status === "discovered" ? `Raccolto il ${likeDate(event.observedAt)} · nessun like eseguito` : "Data e ora del like non registrate"}</span>}
+                <strong>{event.metadata?.authorUsername ? `@${event.metadata.authorUsername}` : "Autore non ancora disponibile"}</strong>
+                {event.metadata?.publishedAt ? <time dateTime={event.metadata.publishedAt}>Pubblicato il {likeDate(event.metadata.publishedAt)}</time>
+                  : <span>Data di pubblicazione non disponibile</span>}
+                <time dateTime={event.observedAt}>Rilevato il {likeDate(event.observedAt)}</time>
               </div>
               <div className="like-history-groups"><span>Gruppi / chat in cui è stato condiviso il post</span>
                 {event.groups.length ? event.groups.map(group => <a key={group.threadPath} href={`https://www.instagram.com${group.threadPath}`} target="_blank" rel="noreferrer">{group.title}</a>) : <span>Gruppo non registrato</span>}

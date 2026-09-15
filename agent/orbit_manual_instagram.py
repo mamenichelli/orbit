@@ -165,7 +165,13 @@ def read_visible_posts(page):
                     ||root?.querySelector('h1')?.innerText||image?.alt||'';
                   const candidate=document.querySelector('meta[property="og:image"]')?.content||image?.src||root?.querySelector('video')?.poster||'';
                   let previewUrl=''; try {const u=new URL(candidate);if(u.protocol==='https:' && /(^|\\.)(cdninstagram\\.com|fbcdn\\.net)$/.test(u.hostname)) previewUrl=u.href;}catch{}
-                  return {caption:caption.slice(0,2000),previewUrl};
+                  let authorUsername='';
+                  const links=root ? Array.from(root.querySelectorAll('header a[href],h2 a[href],a[href]:has(img)')):[];
+                  for(const link of links){try{const path=new URL(link.href).pathname;const m=path.match(/^\/([a-zA-Z0-9._]{1,30})\/?$/);if(m&&!['explore','accounts','direct','reels','stories'].includes(m[1])){authorUsername=m[1];break;}}catch{}}
+                  const times=root ? Array.from(root.querySelectorAll('a[href] time[datetime]')):[];
+                  const time=times.find(n=>{try{return /^\/(p|reel)\/[a-zA-Z0-9_-]+\/?$/.test(new URL(n.closest('a').href).pathname);}catch{return false;}});
+                  const rawDate=time?.getAttribute('datetime');const publishedAt=rawDate && Number.isFinite(Date.parse(rawDate)) ? new Date(rawDate).toISOString():null;
+                  return {caption:caption.slice(0,2000),previewUrl,authorUsername,publishedAt};
                 }''')
             if not opened:
                 # Unknown inline dialogs are not clicked. Stop history traversal after reset.
