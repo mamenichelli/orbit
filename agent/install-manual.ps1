@@ -10,9 +10,5 @@ $orbitSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -Exec
 $orbitWorker = New-ScheduledTaskAction -Execute $orbitPython -WorkingDirectory $orbitProject -Argument ('"{0}" worker --config "{1}"' -f $orbitScript, $orbitConfig)
 $orbitLogon = New-ScheduledTaskTrigger -AtLogOn -User $orbitUser
 Register-ScheduledTask -TaskName 'Orbit Instagram Manual Likes' -Action $orbitWorker -Trigger $orbitLogon -Settings $orbitSettings -Principal $orbitPrincipal -Force | Out-Null
-$orbitCollect = New-ScheduledTaskAction -Execute $orbitPython -WorkingDirectory $orbitProject -Argument ('"{0}" collect --config "{1}"' -f $orbitScript, $orbitConfig)
-$orbitInterval = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 30)
-Register-ScheduledTask -TaskName 'Orbit Instagram Collect Shared Posts' -Action $orbitCollect -Trigger $orbitInterval -Settings $orbitSettings -Principal $orbitPrincipal -Force | Out-Null
 Start-ScheduledTask -TaskName 'Orbit Instagram Manual Likes'
-Start-ScheduledTask -TaskName 'Orbit Instagram Collect Shared Posts'
-Write-Output 'Collegamento manuale e raccolta post avviati; nessun like generato dalla raccolta.'
+Write-Output 'Collegamento manuale avviato. Nessun contenuto delle chat esportato da questa installazione.'

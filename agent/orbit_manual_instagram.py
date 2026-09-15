@@ -117,7 +117,7 @@ def read_visible_posts(page):
     return found, preserved
 
 
-def collect(config_path):
+def collect(config_path, publish_approved=False):
     config, state = load_config(config_path), load_state(config_path)
     groups = posts = 0
     with sync_playwright() as p:
@@ -165,7 +165,8 @@ def collect(config_path):
                                 state["likeEvents"][pid]["pending"] = True
                         posts += len(found.keys() - seen); seen.update(found)
                         save_state(config_path, state)
-                        sync_like_events(config_path, config, state)
+                        if publish_approved:
+                            sync_like_events(config_path, config, state)
                         if not preserved or not scroll_chat(page): break
                         page.wait_for_timeout(1200)
                     print(f"Raccolta: {groups} conversazioni, {posts} post; nessun like eseguito", flush=True)
@@ -189,11 +190,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["worker", "collect"])
     parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parent.parent / ".env.agent")
+    parser.add_argument("--publish-collected-posts", action="store_true", help="Export post references, group names and available previews to Orbit only after explicit authorization")
     args = parser.parse_args()
     logging.basicConfig(filename=str(args.config.resolve().parent / ".orbit-agent" / "manual-agent.log"),
                         encoding="utf-8", level=logging.INFO, format="%(asctime)s %(message)s")
     try:
-        (run_worker if args.command == "worker" else collect)(args.config.resolve())
+        if args.command == "worker": run_worker(args.config.resolve())
+        else: collect(args.config.resolve(), publish_approved=args.publish_collected_posts)
     except Exception as exc:
         logging.error("Agente fermato: %s", type(exc).__name__)
         if isinstance(exc, RuntimeError): print(str(exc), flush=True)
