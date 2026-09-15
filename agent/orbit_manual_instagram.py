@@ -105,6 +105,24 @@ def select_general(page):
     assert_general(page)
 
 
+def mark_general_rows(page):
+    assert_general(page)
+    return page.evaluate('''() => {
+      document.querySelectorAll('[data-orbit-thread-row]').forEach(n=>n.removeAttribute('data-orbit-thread-row'));
+      const tabs=document.querySelector('[role="tablist"]');if(!tabs)return [];
+      const pane=tabs.getBoundingClientRect();
+      const rows=Array.from(document.querySelectorAll('[role="button"]')).filter(n=>{
+        const r=n.getBoundingClientRect();return Math.abs(r.x-pane.x)<20 && Math.abs(r.width-pane.width)<20
+          && r.height>=50 && r.height<=160 && n.querySelector('img') && n.innerText.trim();
+      });
+      return rows.map((n,index)=>{
+        const title=n.innerText.trim().split(String.fromCharCode(10)).map(s=>s.trim()).filter(Boolean)[0];
+        n.setAttribute('data-orbit-thread-row',index);
+        return {index,title,key:title+'|'+(n.querySelector('img')?.src||'').split('?')[0]};
+      });
+    }''')
+
+
 def read_visible_posts(page):
     """Follow only actual Instagram /p/ links. Stories and file dialogs are ignored."""
     assert_general(page)
@@ -178,18 +196,18 @@ def collect(config_path, publish_approved=False, history_pages=40):
             checked_navigation(page, "https://www.instagram.com/direct/inbox/")
             select_general(page)
             deadline = time.monotonic() + 30
-            while not mark_thread_rows(page) and time.monotonic() < deadline:
+            while not mark_general_rows(page) and time.monotonic() < deadline:
                 page.wait_for_timeout(1000)
-            if not mark_thread_rows(page): raise RuntimeError("Conversazioni non caricate: raccolta interrotta, non zero gruppi")
+            if not mark_general_rows(page): raise RuntimeError("Conversazioni non caricate: raccolta interrotta, non zero gruppi")
             visited = set()
             idle = 0
             for _ in range(80):
                 assert_general(page)
-                rows = mark_thread_rows(page)
+                rows = mark_general_rows(page)
                 new = [row for row in rows if row["key"] not in visited]
                 for row in new:
                     assert_general(page)
-                    current = mark_thread_rows(page)
+                    current = mark_general_rows(page)
                     match = next((r for r in current if r["key"] == row["key"]), None)
                     if not match: continue
                     before_url = page.url
@@ -212,7 +230,7 @@ def collect(config_path, publish_approved=False, history_pages=40):
                         print("Conversazione non verificata: salto senza azioni", flush=True)
                         continue
                     visited.add(row["key"])
-                    observed_title = str(row["key"]).splitlines()[0].strip()
+                    observed_title = str(row["title"]).strip()
                     if not observed_title: continue
                     group = {"title": observed_title[:200], "threadPath": urlparse(page.url).path.rstrip("/") + "/", "folder": "general"}
                     groups += 1
@@ -234,7 +252,7 @@ def collect(config_path, publish_approved=False, history_pages=40):
                     print(f"Raccolta: {groups} conversazioni, {posts} post; nessun like eseguito", flush=True)
                 idle = idle + 1 if not new else 0
                 if idle >= 3 or not rows: break
-                mark_thread_rows(page)
+                mark_general_rows(page)
                 assert_general(page)
                 page.locator('[data-orbit-thread-row]').first.evaluate('''n=>{
                   for(let p=n.parentElement;p;p=p.parentElement) {
