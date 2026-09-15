@@ -8,6 +8,7 @@ import json
 import logging
 import hashlib
 import os
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 import re
@@ -84,6 +85,22 @@ def scroll_chat(page):
     }''')
 
 
+def show_latest_messages(page):
+    assert_general(page)
+    for _ in range(3):
+        page.evaluate('''() => {
+          const tabs=document.querySelector('[role="tablist"]');if(!tabs)return;
+          const edge=tabs.getBoundingClientRect().right;
+          const panes=Array.from(document.querySelectorAll('div')).filter(n=>{
+            const r=n.getBoundingClientRect();return r.x>=edge-10 && r.width>250 && r.height>200
+              && n.scrollHeight>n.clientHeight && /auto|scroll/.test(getComputedStyle(n).overflowY);
+          }).sort((a,b)=>b.clientHeight-a.clientHeight);
+          const pane=panes[0];if(pane)pane.scrollTop=getComputedStyle(pane).flexDirection==='column-reverse'?0:pane.scrollHeight;
+        }''')
+        page.wait_for_timeout(500)
+    assert_general(page)
+
+
 def general_selected(page):
     return page.evaluate('''() => {
       const selected=Array.from(document.querySelectorAll('[role="tab"]')).filter(n=>n.getAttribute('aria-selected')==='true');
@@ -152,11 +169,13 @@ def mark_general_rows(page):
     }''')
 
 
-def read_visible_posts(page, known_cards=None, known_events=None):
+def read_visible_posts(page, known_cards=None, known_events=None, on_found=None):
     """Follow only actual Instagram /p/ links. Stories and file dialogs are ignored."""
     assert_general(page)
     found = {pid: {} for href in page.locator('a[href*="/p/"]').evaluate_all(
         "nodes=>nodes.map(n=>n.getAttribute('href')||'')") if (pid := post_id(href))}
+    if on_found:
+        for pid in found: on_found(pid, {})
     def mark_cards():
         return page.evaluate('''() => {
       document.querySelectorAll('[data-orbit-manual-card]').forEach(n=>n.removeAttribute('data-orbit-manual-card'));
@@ -180,6 +199,7 @@ def read_visible_posts(page, known_cards=None, known_events=None):
         cached = (known_events or {}).get(cached_pid, {}).get('metadata', {})
         if cached_pid and post_id('/p/'+cached_pid+'/') and cached.get('authorUsername'):
             found[cached_pid] = cached
+            if on_found: on_found(cached_pid, cached)
             continue
         match = next((card for card in mark_cards() if card["key"] == item["key"]), None)
         if not match: continue
@@ -214,6 +234,7 @@ def read_visible_posts(page, known_cards=None, known_events=None):
                 }''')
                 if known_cards is not None and fingerprint and found[pid].get('authorUsername'):
                     known_cards[fingerprint] = pid
+                if on_found: on_found(pid, found[pid])
             if not opened:
                 # Unknown inline dialogs are not clicked. Stop history traversal after reset.
                 checked_navigation(page, conversation_url)
@@ -232,7 +253,7 @@ def read_visible_posts(page, known_cards=None, known_events=None):
     return found, preserved
 
 
-def collect(config_path, publish_approved=False, history_pages=40):
+def collect(config_path, publish_approved=False, history_pages=40, on_group=None):
     config, state = load_config(config_path), load_state(config_path)
     groups = posts = 0
     with sync_playwright() as p:
@@ -292,11 +313,19 @@ def collect(config_path, publish_approved=False, history_pages=40):
                         print("Intestazione chat non confermata: post esclusi", flush=True)
                         continue
                     group = {"title": observed_title[:200], "threadPath": urlparse(page.url).path.rstrip("/") + "/", "folder": "general", "verification": "general-roster-v2"}
+                    show_latest_messages(page)
                     groups += 1
                     seen = set()
+                    def persist_found(pid, metadata):
+                        record_like_event(state, pid, [group], 'discovered')
+                        if metadata and state['likeEvents'][pid].get('metadata') != metadata:
+                            state['likeEvents'][pid]['metadata'] = metadata
+                            state['likeEvents'][pid]['pending'] = True
+                        save_state(config_path, state)
+                        if publish_approved: sync_like_events(config_path, config, state)
                     for _ in range(history_pages):
                         known_cards = state.setdefault('generalCardCache', {}).setdefault(group['threadPath'], {})
-                        found, preserved = read_visible_posts(page, known_cards, state.get('likeEvents', {}))
+                        found, preserved = read_visible_posts(page, known_cards, state.get('likeEvents', {}), persist_found)
                         assert_general(page)
                         for pid in found:
                             record_like_event(state, pid, [group], "discovered")
@@ -310,6 +339,7 @@ def collect(config_path, publish_approved=False, history_pages=40):
                         if not preserved or not scroll_chat(page): break
                         page.wait_for_timeout(1200)
                     print(f"Raccolta: {groups} conversazioni, {posts} post; nessun like eseguito", flush=True)
+                    if on_group and not on_group(): return 'interrupted'
                 idle = idle + 1 if not new else 0
                 if idle >= 3 or not rows: break
                 mark_general_rows(page)
@@ -322,6 +352,8 @@ def collect(config_path, publish_approved=False, history_pages=40):
                   }
                 }''')
                 page.wait_for_timeout(1500)
+            if any(event.get('pending') for event in state.get('likeEvents', {}).values()):
+                raise requests.ConnectionError('Post conservati localmente ma non ancora confermati da Orbit')
         finally:
             context.close()
             if browser: browser.close()
@@ -358,17 +390,45 @@ def watch_collected_posts(config_path, publish_approved=False, interval=60):
     if not publish_approved:
         raise RuntimeError('Pubblicazione dei post non autorizzata: raccolta continua non avviata')
     with collector_lock(config_path):
-        while True:
-            delay = max(60, interval)
-            try:
-                logging.info('Avvio nuovo ciclo Generale in sola lettura')
-                collect(config_path, publish_approved=True, history_pages=1)
-                print('Ciclo Generale completato: controllo dei nuovi post al prossimo ciclo', flush=True)
-            except (BrowserTimeout, requests.RequestException) as exc:
-                logging.warning('Raccolta rinviata: %s; nessuna azione Instagram eseguita', type(exc).__name__)
-                delay = max(300, delay)
-            # Account/folder verification failures stop rather than accepting uncertain data.
-            time.sleep(delay)
+        config=load_config(config_path)
+        latest={'requested_at':0}
+        stop=threading.Event()
+        def control(action, **fields):
+            return gateway_post(config, '/api/agent/instagram-collection', {'action':action,'accountUsername':required(config,'ORBIT_INSTAGRAM_USERNAME'),**fields})
+        def heartbeat():
+            while not stop.is_set():
+                try: latest.update(control('poll'))
+                except requests.RequestException: logging.warning('Coordinamento refresh temporaneamente non disponibile')
+                stop.wait(3)
+        threading.Thread(target=heartbeat,daemon=True).start()
+        completed=0
+        next_scan=0
+        try:
+            while True:
+                if time.monotonic()<next_scan and latest.get('requested_at',0)<=completed:
+                    time.sleep(1);continue
+                version=0
+                try:
+                    scan=control('started');version=scan['started_request_at']
+                    logging.info('Avvio nuovo ciclo Generale in sola lettura')
+                    started=time.monotonic()
+                    result=collect(config_path,publish_approved=True,history_pages=1,
+                        on_group=lambda: latest.get('requested_at',0)<=version or time.monotonic()-started<30)
+                    if result=='interrupted':continue
+                    control('finished',version=version);completed=max(completed,version)
+                    print('Ciclo Generale completato: refresh confermato',flush=True)
+                    next_scan=time.monotonic()+max(60,interval)
+                except (BrowserTimeout, requests.RequestException) as exc:
+                    logging.exception('Raccolta rinviata: %s; nessuna azione Instagram eseguita',type(exc).__name__)
+                    try:control('failed',version=version)
+                    except requests.RequestException:pass
+                    next_scan=time.monotonic()+60
+                    time.sleep(10)
+                except RuntimeError:
+                    try:control('failed',version=version)
+                    except requests.RequestException:pass
+                    raise
+        finally:stop.set()
 
 
 if __name__ == "__main__":

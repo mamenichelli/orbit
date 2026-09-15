@@ -311,6 +311,9 @@ export default function Home() {
   const [manualLikes, setManualLikes] = useState<Record<string, { id: string; startedAt: number }>>({});
   const manualRequests = useRef<Record<string, { id: string; startedAt: number }>>({});
   const [manualMessage, setManualMessage] = useState("");
+  const [collectionMessage,setCollectionMessage]=useState('');
+  const likePageRef=useRef(likePage);
+  useEffect(()=>{likePageRef.current=likePage;},[likePage]);
   const hiddenPosts = useRef(new Set<string>());
   const skipPost = async (shortcode: string) => {
     if (manualRequests.current[shortcode] || hiddenPosts.current.has(shortcode)) return;
@@ -374,6 +377,33 @@ export default function Home() {
     const timer = window.setInterval(() => void poll(), 2000);
     return () => { stopped = true; window.clearInterval(timer); };
   }, []);
+
+  useEffect(()=>{
+    const controller=new AbortController();let running=false;let version=0;
+    const update=async()=>{
+      if(running||controller.signal.aborted)return;running=true;
+      try {
+        const statusResponse=await fetch('/api/instagram/refresh-posts',{cache:'no-store',signal:controller.signal});
+        const status=await statusResponse.json();if(!statusResponse.ok)throw Error(status.error);
+        const page=likePageRef.current;
+        const response=await fetch(`/api/agent/instagram-likes?page=${page}`,{cache:'no-store',signal:controller.signal});
+        const result=await response.json() as LikeHistory;
+        if(!response.ok)throw Error('Post temporaneamente non disponibili');
+        if(!controller.signal.aborted&&page===likePageRef.current){const hidden=result.events.filter(event=>hiddenPosts.current.has(event.shortcode));setLikeHistory({...result,total:Math.max(0,result.total-hidden.length),events:result.events.filter(event=>!hiddenPosts.current.has(event.shortcode))});}
+        if(controller.signal.aborted)return;
+        if(version && status.completed_request_at>=version){setCollectionMessage('Aggiornamento Instagram completato');return;}
+        setCollectionMessage(status.error || (Date.now()-status.last_seen>120000 ? 'Attendo il collegamento della raccolta Instagram: il PC deve essere acceso' : 'Aggiornamento da Instagram in corso: i post appaiono appena verificati'));
+      }catch(error){if(!controller.signal.aborted)setCollectionMessage(error instanceof Error?error.message:'Aggiornamento non completato');}
+      finally{running=false;}
+    };
+    const begin=async()=>{
+      setCollectionMessage('Richiedo i nuovi post a Instagram…');
+      try{const response=await fetch('/api/instagram/refresh-posts',{method:'POST',headers:{'x-orbit-manual':'1'},signal:controller.signal});const body=await response.json();if(!response.ok)throw Error(body.error);version=body.requested_at;await update();}
+      catch(error){if(!controller.signal.aborted)setCollectionMessage(error instanceof Error?error.message:'Aggiornamento non richiesto');}
+    };
+    void begin();const timer=window.setInterval(()=>void update(),3000);
+    return()=>{controller.abort();window.clearInterval(timer);};
+  },[]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -926,6 +956,7 @@ export default function Home() {
             <div className="panel-head"><div><p className="eyebrow">SOLO GENERALE · @{likeHistory?.accountUsername ?? "ma.menichelli"}</p><h2>Post da Generale</h2></div><span className="daily-count">{formatNumber(likeHistory?.total ?? 0)}</span></div>
             <p className="like-history-note">Un clic su «Mi piace» agisce solo su quel post, senza uscire da Orbit. {likeHistory?.manualOnline ? "Collegamento Instagram attivo." : "Collegamento Instagram offline: accendi il PC e avvia l’agente manuale."}</p>
             {manualMessage && <p className="like-history-note" role="status">{manualMessage}</p>}
+            {collectionMessage && <p className="like-history-note" role="status">{collectionMessage}</p>}
             {likeHistoryError && <p role="status" className="sync-error">{likeHistoryError}. I dati già caricati restano visibili.</p>}
             {!likeHistory && !likeHistoryError && <p className="like-history-note">Caricamento dello storico…</p>}
             {likeHistory && !likeHistory.total && <p className="like-history-note">Nessun post verificato in Generale. I vecchi record senza provenienza verificata sono esclusi mentre la raccolta riparte.</p>}

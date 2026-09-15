@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 from contextlib import nullcontext
 from pathlib import Path
+from itertools import count
 from orbit_manual_instagram import valid_job, assert_general, select_general, watch_collected_posts
 
 class ManualIntentTests(unittest.TestCase):
@@ -12,11 +13,19 @@ class ManualIntentTests(unittest.TestCase):
         self.assertIn('header.inner_text().strip()[:200] != observed_title[:200]',source)
     def test_collector_repeats_instead_of_stopping_after_one_scan(self):
         with patch('orbit_manual_instagram.collector_lock', return_value=nullcontext()), \
-             patch('orbit_manual_instagram.collect') as scan, \
-             patch('orbit_manual_instagram.time.sleep', side_effect=[None, StopIteration]):
+             patch('orbit_manual_instagram.load_config',return_value={'ORBIT_INSTAGRAM_USERNAME':'test'}), \
+             patch('orbit_manual_instagram.gateway_post',return_value={'started_request_at':0}), \
+             patch('orbit_manual_instagram.threading.Thread'), \
+             patch('orbit_manual_instagram.time.monotonic',side_effect=count(0,61)), \
+             patch('orbit_manual_instagram.collect',side_effect=[None,StopIteration]) as scan:
             with self.assertRaises(StopIteration): watch_collected_posts(Path('.env.agent'), True)
         self.assertEqual(scan.call_count,2)
-        scan.assert_called_with(Path('.env.agent'), publish_approved=True, history_pages=1)
+        self.assertTrue(scan.call_args.kwargs['publish_approved'])
+        self.assertEqual(scan.call_args.kwargs['history_pages'],1)
+    def test_each_post_is_persisted_before_later_navigation_can_time_out(self):
+        source=Path(__file__).with_name('orbit_manual_instagram.py').read_text(encoding='utf-8')
+        self.assertLess(source.index('if on_found: on_found(pid, found[pid])'),source.index('if not opened:'))
+        self.assertLess(source.index('show_latest_messages(page)\n'),source.index('seen = set()'))
     def test_continuous_collection_requires_export_approval(self):
         with self.assertRaises(RuntimeError):watch_collected_posts(Path('.env.agent'), False)
     def test_general_tab_waits_until_primary_rows_are_replaced(self):

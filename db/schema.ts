@@ -40,6 +40,16 @@ export const instagramManualAgent = sqliteTable("instagram_manual_agent", {
   accountUsername: text("account_username").primaryKey(),
   lastSeen: integer("last_seen").notNull(),
 });
+export const instagramCollection = sqliteTable('instagram_collection', {
+  accountUsername: text('account_username').primaryKey(),
+  requestedAt: integer('requested_at').notNull().default(0),
+  startedRequestAt: integer('started_request_at').notNull().default(0),
+  completedRequestAt: integer('completed_request_at').notNull().default(0),
+  startedAt: integer('started_at').notNull().default(0),
+  completedAt: integer('completed_at').notNull().default(0),
+  lastSeen: integer('last_seen').notNull().default(0),
+  error: text('error').notNull().default(''),
+});
 export const instagramManualLikes = sqliteTable("instagram_manual_likes", {
   id: text("id").primaryKey(),
   accountUsername: text("account_username").notNull(),
