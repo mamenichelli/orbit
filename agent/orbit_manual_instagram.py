@@ -113,9 +113,17 @@ def assert_general(page):
         raise RuntimeError("Scheda Generale non confermata: raccolta fermata, nessun post di Principale importato")
 
 
+def checked_collection_navigation(page, url):
+    # Instagram's document load can stall even when the verified inbox renders.
+    # Await the navigation commit, then let select_general verify the real UI.
+    page.goto(url, wait_until="commit", timeout=45000)
+    if "/accounts/login" in page.url:
+        raise RuntimeError("Sessione Instagram scaduta: accedi di nuovo nel profilo Edge dell'agente")
+
+
 def select_general(page):
     tab = page.get_by_role("tab", name=re.compile(r"^General$|^Generali$|^Generale$", re.I))
-    tab.first.wait_for(state="visible", timeout=30000)
+    tab.first.wait_for(state="visible", timeout=45000)
     if not general_selected(page):
         # aria-selected changes before Instagram replaces the inbox rows.
         # Remember Primary's rows and do not accept them as General during loading.
@@ -237,13 +245,13 @@ def read_visible_posts(page, known_cards=None, known_events=None, on_found=None)
                 if on_found: on_found(pid, found[pid])
             if not opened:
                 # Unknown inline dialogs are not clicked. Stop history traversal after reset.
-                checked_navigation(page, conversation_url)
+                checked_collection_navigation(page, conversation_url)
                 select_general(page)
                 page.wait_for_timeout(2000)
                 preserved = False
         except BrowserTimeout:
             print("Anteprima non caricata: post non importato senza verifica", flush=True)
-            checked_navigation(page, conversation_url)
+            checked_collection_navigation(page, conversation_url)
             select_general(page)
             preserved = False
         finally:
@@ -261,7 +269,7 @@ def collect(config_path, publish_approved=False, history_pages=40, on_group=None
         try:
             assert_account(context, required(config, "ORBIT_INSTAGRAM_USERNAME"))
             page = context.new_page()
-            checked_navigation(page, "https://www.instagram.com/direct/inbox/")
+            checked_collection_navigation(page, "https://www.instagram.com/direct/inbox/")
             select_general(page)
             deadline = time.monotonic() + 30
             while not mark_general_rows(page) and time.monotonic() < deadline:
@@ -295,7 +303,7 @@ def collect(config_path, publish_approved=False, history_pages=40, on_group=None
                     if not re.fullmatch(r"/direct/t/[^/]+/?", urlparse(page.url).path):
                         visited.add(row["key"])
                         print("Conversazione non verificata: salto senza azioni", flush=True)
-                        checked_navigation(page, "https://www.instagram.com/direct/inbox/")
+                        checked_collection_navigation(page, "https://www.instagram.com/direct/inbox/")
                         select_general(page)
                         continue
                     select_general(page)

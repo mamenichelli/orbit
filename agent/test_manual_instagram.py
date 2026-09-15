@@ -12,7 +12,12 @@ class ManualIntentTests(unittest.TestCase):
         self.assertEqual(source.count('r.y>=pane.bottom'),2)
         guard=source.index('if not re.fullmatch(r"/direct/t/')
         self.assertLess(guard,source.index('select_general(page)',guard))
-        self.assertIn('checked_navigation(page, "https://www.instagram.com/direct/inbox/")',source[guard:guard+550])
+        self.assertIn('checked_collection_navigation(page, "https://www.instagram.com/direct/inbox/")',source[guard:guard+550])
+    def test_collection_waits_for_real_general_ui_not_document_loaded_event(self):
+        source=Path(__file__).with_name('orbit_manual_instagram.py').read_text(encoding='utf-8')
+        self.assertIn('page.goto(url, wait_until="commit", timeout=45000)',source)
+        self.assertIn('if "/accounts/login" in page.url:',source)
+        self.assertIn('tab.first.wait_for(state="visible", timeout=45000)',source)
     def test_already_open_latest_chat_is_not_skipped(self):
         source=Path(__file__).with_name('orbit_manual_instagram.py').read_text(encoding='utf-8')
         self.assertNotIn('Chat non cambiata: salto',source)
