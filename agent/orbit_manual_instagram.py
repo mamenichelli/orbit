@@ -145,7 +145,7 @@ def inbox_signature(page):
       const tabs=document.querySelector('[role="tablist"]');if(!tabs)return '';
       const pane=tabs.getBoundingClientRect();
       return Array.from(document.querySelectorAll('[role="button"]')).filter(n=>{
-        const r=n.getBoundingClientRect();return Math.abs(r.x-pane.x)<20 && Math.abs(r.width-pane.width)<20
+        const r=n.getBoundingClientRect();return r.y>=pane.bottom && Math.abs(r.x-pane.x)<20 && Math.abs(r.width-pane.width)<20
           && r.height>=50 && r.height<=160 && n.querySelector('img') && n.innerText.trim();
       }).map(n=>n.innerText.trim().split(String.fromCharCode(10))[0]+'|'+(n.querySelector('img')?.src||'').split('?')[0]).join('||');
     }''')
@@ -158,7 +158,7 @@ def mark_general_rows(page):
       const tabs=document.querySelector('[role="tablist"]');if(!tabs)return [];
       const pane=tabs.getBoundingClientRect();
       const rows=Array.from(document.querySelectorAll('[role="button"]')).filter(n=>{
-        const r=n.getBoundingClientRect();return Math.abs(r.x-pane.x)<20 && Math.abs(r.width-pane.width)<20
+        const r=n.getBoundingClientRect();return r.y>=pane.bottom && Math.abs(r.x-pane.x)<20 && Math.abs(r.width-pane.width)<20
           && r.height>=50 && r.height<=160 && n.querySelector('img') && n.innerText.trim();
       });
       return rows.map((n,index)=>{
@@ -292,11 +292,13 @@ def collect(config_path, publish_approved=False, history_pages=40, on_group=None
                         # Its unchanged URL is valid only after the header check below.
                         print("Chat già aperta: verifico intestazione e cartella prima della raccolta", flush=True)
                     page.wait_for_timeout(2500)
-                    select_general(page)
                     if not re.fullmatch(r"/direct/t/[^/]+/?", urlparse(page.url).path):
                         visited.add(row["key"])
                         print("Conversazione non verificata: salto senza azioni", flush=True)
+                        checked_navigation(page, "https://www.instagram.com/direct/inbox/")
+                        select_general(page)
                         continue
+                    select_general(page)
                     visited.add(row["key"])
                     observed_title = str(row["title"]).strip()
                     if not observed_title: continue

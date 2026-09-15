@@ -7,6 +7,12 @@ from itertools import count
 from orbit_manual_instagram import valid_job, assert_general, select_general, watch_collected_posts
 
 class ManualIntentTests(unittest.TestCase):
+    def test_roster_excludes_buttons_above_general_and_recovers_non_chat_navigation(self):
+        source=Path(__file__).with_name('orbit_manual_instagram.py').read_text(encoding='utf-8')
+        self.assertEqual(source.count('r.y>=pane.bottom'),2)
+        guard=source.index('if not re.fullmatch(r"/direct/t/')
+        self.assertLess(guard,source.index('select_general(page)',guard))
+        self.assertIn('checked_navigation(page, "https://www.instagram.com/direct/inbox/")',source[guard:guard+550])
     def test_already_open_latest_chat_is_not_skipped(self):
         source=Path(__file__).with_name('orbit_manual_instagram.py').read_text(encoding='utf-8')
         self.assertNotIn('Chat non cambiata: salto',source)
