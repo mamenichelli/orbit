@@ -267,9 +267,9 @@ def collect(config_path, publish_approved=False, history_pages=40):
                     try:
                         page.wait_for_url(lambda url: str(url) != before_url and '/direct/t/' in str(url), timeout=10000)
                     except Exception:
-                        visited.add(row["key"])
-                        print("Chat non cambiata: salto senza assegnare un gruppo errato", flush=True)
-                        continue
+                        # The most recent General chat may already be selected.
+                        # Its unchanged URL is valid only after the header check below.
+                        print("Chat già aperta: verifico intestazione e cartella prima della raccolta", flush=True)
                     page.wait_for_timeout(2500)
                     select_general(page)
                     if not re.fullmatch(r"/direct/t/[^/]+/?", urlparse(page.url).path):

@@ -6,6 +6,10 @@ from pathlib import Path
 from orbit_manual_instagram import valid_job, assert_general, select_general, watch_collected_posts
 
 class ManualIntentTests(unittest.TestCase):
+    def test_already_open_latest_chat_is_not_skipped(self):
+        source=Path(__file__).with_name('orbit_manual_instagram.py').read_text(encoding='utf-8')
+        self.assertNotIn('Chat non cambiata: salto',source)
+        self.assertIn('header.inner_text().strip()[:200] != observed_title[:200]',source)
     def test_collector_repeats_instead_of_stopping_after_one_scan(self):
         with patch('orbit_manual_instagram.collector_lock', return_value=nullcontext()), \
              patch('orbit_manual_instagram.collect') as scan, \
