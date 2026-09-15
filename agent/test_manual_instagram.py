@@ -1,8 +1,20 @@
 import time
 import unittest
-from orbit_manual_instagram import valid_job, assert_general, select_general
+from unittest.mock import patch
+from contextlib import nullcontext
+from pathlib import Path
+from orbit_manual_instagram import valid_job, assert_general, select_general, watch_collected_posts
 
 class ManualIntentTests(unittest.TestCase):
+    def test_collector_repeats_instead_of_stopping_after_one_scan(self):
+        with patch('orbit_manual_instagram.collector_lock', return_value=nullcontext()), \
+             patch('orbit_manual_instagram.collect') as scan, \
+             patch('orbit_manual_instagram.time.sleep', side_effect=[None, StopIteration]):
+            with self.assertRaises(StopIteration): watch_collected_posts(Path('.env.agent'), True)
+        self.assertEqual(scan.call_count,2)
+        scan.assert_called_with(Path('.env.agent'), publish_approved=True, history_pages=1)
+    def test_continuous_collection_requires_export_approval(self):
+        with self.assertRaises(RuntimeError):watch_collected_posts(Path('.env.agent'), False)
     def test_general_tab_waits_until_primary_rows_are_replaced(self):
         class Page:
             def __init__(self): self.selected=False; self.samples=0; self.first=self

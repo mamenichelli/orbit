@@ -6,6 +6,9 @@ import argparse
 from datetime import datetime, timezone
 import json
 import logging
+import hashlib
+import os
+from contextlib import contextmanager
 from pathlib import Path
 import re
 import time
@@ -149,7 +152,7 @@ def mark_general_rows(page):
     }''')
 
 
-def read_visible_posts(page):
+def read_visible_posts(page, known_cards=None, known_events=None):
     """Follow only actual Instagram /p/ links. Stories and file dialogs are ignored."""
     assert_general(page)
     found = {pid: {} for href in page.locator('a[href*="/p/"]').evaluate_all(
@@ -162,12 +165,22 @@ def read_visible_posts(page):
       return Array.from(document.querySelectorAll('[role="button"]')).filter(n=>{
         const r=n.getBoundingClientRect(); return r.x>=edge && r.width>=150 && r.width<=450
           && r.height>=120 && n.querySelector('img');
-      }).map((n,i)=>{n.setAttribute('data-orbit-manual-card',i); return {index:i,key:n.innerText+'|'+(n.querySelector('img')?.src||'').split('?')[0]};});
+      }).map((n,i)=>{
+        n.setAttribute('data-orbit-manual-card',i);
+        const images=Array.from(n.querySelectorAll('img')).filter(img=>{const r=img.getBoundingClientRect();return r.width>=100 && r.height>=100;}).map(img=>img.src.split('?')[0]);
+        return {index:i,key:n.innerText+'|'+(n.querySelector('img')?.src||'').split('?')[0],cacheKey:images.length?JSON.stringify([n.innerText,images]):''};
+      });
     }''')
     cards = mark_cards()
     conversation_url = page.url
     preserved = True
     for item in cards:
+        fingerprint = hashlib.sha256(item.get('cacheKey','').encode('utf-8')).hexdigest() if item.get('cacheKey') else None
+        cached_pid = known_cards.get(fingerprint) if known_cards is not None and fingerprint else None
+        cached = (known_events or {}).get(cached_pid, {}).get('metadata', {})
+        if cached_pid and post_id('/p/'+cached_pid+'/') and cached.get('authorUsername'):
+            found[cached_pid] = cached
+            continue
         match = next((card for card in mark_cards() if card["key"] == item["key"]), None)
         if not match: continue
         index = match["index"]
@@ -199,6 +212,8 @@ def read_visible_posts(page):
                   const rawDate=time?.getAttribute('datetime');const publishedAt=rawDate && Number.isFinite(Date.parse(rawDate)) ? new Date(rawDate).toISOString():null;
                   return {caption:caption.slice(0,2000),previewUrl,authorUsername,publishedAt};
                 }''')
+                if known_cards is not None and fingerprint and found[pid].get('authorUsername'):
+                    known_cards[fingerprint] = pid
             if not opened:
                 # Unknown inline dialogs are not clicked. Stop history traversal after reset.
                 checked_navigation(page, conversation_url)
@@ -280,11 +295,12 @@ def collect(config_path, publish_approved=False, history_pages=40):
                     groups += 1
                     seen = set()
                     for _ in range(history_pages):
-                        found, preserved = read_visible_posts(page)
+                        known_cards = state.setdefault('generalCardCache', {}).setdefault(group['threadPath'], {})
+                        found, preserved = read_visible_posts(page, known_cards, state.get('likeEvents', {}))
                         assert_general(page)
                         for pid in found:
                             record_like_event(state, pid, [group], "discovered")
-                            if found[pid]:
+                            if found[pid] and state['likeEvents'][pid].get('metadata') != found[pid]:
                                 state["likeEvents"][pid]["metadata"] = found[pid]
                                 state["likeEvents"][pid]["pending"] = True
                         posts += len(found.keys() - seen); seen.update(found)
@@ -311,17 +327,63 @@ def collect(config_path, publish_approved=False, history_pages=40):
             if browser: browser.close()
 
 
+@contextmanager
+def collector_lock(config_path):
+    """One read-only collector per PC; never overlap scheduled and manual starts."""
+    directory = config_path.parent / '.orbit-agent'
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / 'general-collector.lock').open('a+b') as handle:
+        handle.seek(0, 2)
+        if handle.tell() == 0:
+            handle.write(b'0'); handle.flush()
+        handle.seek(0)
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise RuntimeError('Raccolta Generale già attiva: nessun secondo processo avviato') from exc
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            if os.name == 'nt': msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else: fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def watch_collected_posts(config_path, publish_approved=False, interval=60):
+    if not publish_approved:
+        raise RuntimeError('Pubblicazione dei post non autorizzata: raccolta continua non avviata')
+    with collector_lock(config_path):
+        while True:
+            delay = max(60, interval)
+            try:
+                logging.info('Avvio nuovo ciclo Generale in sola lettura')
+                collect(config_path, publish_approved=True, history_pages=1)
+                print('Ciclo Generale completato: controllo dei nuovi post al prossimo ciclo', flush=True)
+            except (BrowserTimeout, requests.RequestException) as exc:
+                logging.warning('Raccolta rinviata: %s; nessuna azione Instagram eseguita', type(exc).__name__)
+                delay = max(300, delay)
+            # Account/folder verification failures stop rather than accepting uncertain data.
+            time.sleep(delay)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["worker", "collect"])
+    parser.add_argument("command", choices=["worker", "collect", "watch"])
     parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parent.parent / ".env.agent")
     parser.add_argument("--publish-collected-posts", action="store_true", help="Export post references, group names and available previews to Orbit only after explicit authorization")
     parser.add_argument("--history-pages", type=int, default=40)
+    parser.add_argument("--interval", type=int, default=60)
     args = parser.parse_args()
     logging.basicConfig(filename=str(args.config.resolve().parent / ".orbit-agent" / "manual-agent.log"),
                         encoding="utf-8", level=logging.INFO, format="%(asctime)s %(message)s")
     try:
         if args.command == "worker": run_worker(args.config.resolve())
+        elif args.command == 'watch': watch_collected_posts(args.config.resolve(), args.publish_collected_posts, max(60, args.interval))
         else: collect(args.config.resolve(), publish_approved=args.publish_collected_posts, history_pages=max(1, min(40, args.history_pages)))
     except Exception as exc:
         logging.error("Agente fermato: %s", type(exc).__name__)
