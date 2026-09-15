@@ -57,6 +57,20 @@
       "when": 1789472981421,
       "tag": "0007_plain_patch",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1789474481120,
+      "tag": "0008_pale_excalibur",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1789474624491,
+      "tag": "0009_unique_shooting_star",
+      "breakpoints": true
     }
   ]
 }

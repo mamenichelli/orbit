@@ -33,7 +33,24 @@ export const browserLikeEvents = sqliteTable("browser_like_events", {
   likedAt: text("liked_at"),
   observedAt: text("observed_at").notNull(),
   groupsJson: text("groups_json").notNull().default("[]"),
+  metadataJson: text("metadata_json").notNull().default("{}"),
 }, (table) => [uniqueIndex("browser_like_events_account_post_idx").on(table.accountUsername, table.shortcode)]);
+
+export const instagramManualAgent = sqliteTable("instagram_manual_agent", {
+  accountUsername: text("account_username").primaryKey(),
+  lastSeen: integer("last_seen").notNull(),
+});
+export const instagramManualLikes = sqliteTable("instagram_manual_likes", {
+  id: text("id").primaryKey(),
+  accountUsername: text("account_username").notNull(),
+  shortcode: text("shortcode").notNull(),
+  requestedBy: text("requested_by").notNull(),
+  status: text("status").notNull(),
+  requestedAt: integer("requested_at").notNull(),
+  finishedAt: integer("finished_at"),
+  message: text("message").notNull().default(""),
+}, table => [uniqueIndex("instagram_manual_likes_one_active_account").on(table.accountUsername)
+  .where(sql`${table.status} IN ('pending', 'executing')`)]);
 
 export const relationshipCandidates = sqliteTable("relationship_candidates", {
   externalId: text("external_id").primaryKey(),

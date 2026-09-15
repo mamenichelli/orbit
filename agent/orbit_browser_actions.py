@@ -82,6 +82,9 @@ def sync_like_events(config_path: Path, config: dict, state: dict) -> bool:
         payload = [{key: event[key] for key in
                     ("eventId", "shortcode", "status", "likedAt", "observedAt", "groups")}
                    for event in batch]
+        for entry, event in zip(payload, batch):
+            if event.get("metadata"):
+                entry["metadata"] = event["metadata"]
         try:
             response = gateway_post(config, "/api/agent/instagram-likes", {
                 "accountUsername": required(config, "ORBIT_INSTAGRAM_USERNAME"), "events": payload})

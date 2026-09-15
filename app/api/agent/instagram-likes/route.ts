@@ -1,4 +1,5 @@
 import { getRawDb } from "@/db";
+import { manualAgentOnline } from "@/app/instagram-manual";
 
 export const dynamic = "force-dynamic";
 const account = process.env.ORBIT_INSTAGRAM_USERNAME ?? "ma.menichelli";
@@ -14,7 +15,11 @@ async function agentAuthorized(request: Request) {
 }
 
 type Group = { title: string; threadPath: string };
-type LikeEvent = { eventId: string; shortcode: string; status: string; likedAt: string | null; observedAt: string; groups: Group[] };
+type LikeEvent = { eventId: string; shortcode: string; status: string; likedAt: string | null; observedAt: string; groups: Group[]; metadata?: { caption?: string; previewUrl?: string } };
+function safePreview(value: unknown) {
+  if (value === undefined || value === "") return true;
+  try { const url = new URL(String(value)); return url.protocol === "https:" && !url.username && !url.password && ["cdninstagram.com", "fbcdn.net"].some(domain => url.hostname === domain || url.hostname.endsWith(`.${domain}`)); } catch { return false; }
+}
 
 function validDate(value: unknown) {
   return typeof value === "string" && Number.isFinite(Date.parse(value))
@@ -35,8 +40,9 @@ export async function POST(request: Request) {
   for (const event of body.events) {
     if (!event || typeof event.eventId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(event.eventId)
       || typeof event.shortcode !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(event.shortcode)
-      || !["applied", "already_liked", "legacy"].includes(event.status)
+      || !["applied", "already_liked", "legacy", "discovered"].includes(event.status)
       || !validDate(event.observedAt)
+      || (event.metadata !== undefined && (!event.metadata || typeof event.metadata.caption !== "string" || event.metadata.caption.length > 2000 || !safePreview(event.metadata.previewUrl)))
       || (event.status === "applied" ? !validDate(event.likedAt) : event.likedAt !== null)
       || !Array.isArray(event.groups) || event.groups.length > 50
       || event.groups.some(group => !group || typeof group.title !== "string" || !group.title.trim()
@@ -47,14 +53,15 @@ export async function POST(request: Request) {
   const db = getRawDb();
   if (body.events.length) await db.batch(body.events.map(event =>
     db.prepare(`INSERT INTO browser_like_events
-      (event_id, account_username, shortcode, status, liked_at, observed_at, groups_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      (event_id, account_username, shortcode, status, liked_at, observed_at, groups_json, metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(account_username, shortcode) DO UPDATE SET
         groups_json = (SELECT json_group_array(json(value)) FROM
           (SELECT value FROM json_each(browser_like_events.groups_json)
-           UNION SELECT value FROM json_each(excluded.groups_json)))`)
+           UNION SELECT value FROM json_each(excluded.groups_json))),
+        metadata_json = CASE WHEN excluded.metadata_json != '{}' THEN excluded.metadata_json ELSE browser_like_events.metadata_json END`)
       .bind(event.eventId, account, event.shortcode, event.status, event.likedAt,
-        event.observedAt, JSON.stringify(event.groups))));
+        event.observedAt, JSON.stringify(event.groups), JSON.stringify(event.metadata ?? {}))));
   return Response.json({ ok: true, accepted: body.events.length });
 }
 
@@ -68,17 +75,18 @@ export async function GET(request: Request) {
   try {
     const db = getRawDb();
     const [rows, counts] = await Promise.all([
-      db.prepare(`SELECT event_id, shortcode, status, liked_at, observed_at, groups_json
+      db.prepare(`SELECT event_id, shortcode, status, liked_at, observed_at, groups_json, metadata_json
         FROM browser_like_events WHERE account_username = ?
         ORDER BY COALESCE(liked_at, observed_at) DESC, event_id DESC LIMIT 20 OFFSET ?`)
-        .bind(account, (page - 1) * 20).all<{ event_id: string; shortcode: string; status: string; liked_at: string | null; observed_at: string; groups_json: string }>(),
+        .bind(account, (page - 1) * 20).all<{ event_id: string; shortcode: string; status: string; liked_at: string | null; observed_at: string; groups_json: string; metadata_json: string }>(),
       db.prepare(`SELECT COUNT(*) AS total, SUM(status = 'applied') AS applied
         FROM browser_like_events WHERE account_username = ?`).bind(account).first<{ total: number; applied: number | null }>(),
     ]);
     return Response.json({
       accountUsername: account, page, pageSize: 20, total: counts?.total ?? 0, applied: counts?.applied ?? 0,
+      manualOnline: await manualAgentOnline(),
       events: (rows.results ?? []).map(row => ({ eventId: row.event_id, shortcode: row.shortcode,
-        status: row.status, likedAt: row.liked_at, observedAt: row.observed_at, groups: JSON.parse(row.groups_json) })),
+        status: row.status, likedAt: row.liked_at, observedAt: row.observed_at, groups: JSON.parse(row.groups_json), metadata: JSON.parse(row.metadata_json) })),
     }, { headers: { "cache-control": "no-store" } });
   } catch {
     return Response.json({ error: "Storico like temporaneamente non disponibile" }, { status: 503 });

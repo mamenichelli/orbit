@@ -96,9 +96,9 @@ type QueueItem = {
 type AuditItem = { id: number; event_type: string; payload: string; created_at: string };
 
 type LikeHistory = {
-  accountUsername: string; page: number; pageSize: number; total: number; applied: number;
-  events: { eventId: string; shortcode: string; status: "applied" | "already_liked" | "legacy";
-    likedAt: string | null; observedAt: string; groups: { title: string; threadPath: string }[] }[];
+  accountUsername: string; page: number; pageSize: number; total: number; applied: number; manualOnline: boolean;
+  events: { eventId: string; shortcode: string; status: "applied" | "already_liked" | "legacy" | "discovered";
+    likedAt: string | null; observedAt: string; groups: { title: string; threadPath: string }[]; metadata?: { caption?: string; previewUrl?: string } }[];
 };
 
 function likeDate(value: string) {
@@ -308,6 +308,44 @@ export default function Home() {
   const [likePage, setLikePage] = useState(1);
   const [likeHistory, setLikeHistory] = useState<LikeHistory | null>(null);
   const [likeHistoryError, setLikeHistoryError] = useState("");
+  const [manualLike, setManualLike] = useState<{ id: string; shortcode: string } | null>(null);
+  const [manualMessage, setManualMessage] = useState("");
+
+  const requestManualLike = async (shortcode: string) => {
+    if (manualLike) return;
+    const id = crypto.randomUUID();
+    setManualLike({ id, shortcode }); setManualMessage("");
+    try {
+      const response = await fetch("/api/instagram/manual-like", { method: "POST", headers: { "content-type": "application/json", "x-orbit-manual": "1" }, body: JSON.stringify({ id, shortcode }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Like non richiesto");
+    } catch (error) {
+      setManualMessage(error instanceof Error ? error.message : "Richiesta non confermata: controlla prima di riprovare");
+      setManualLike(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!manualLike) return;
+    let stopped = false;
+    const started = Date.now();
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/instagram/manual-like?id=${manualLike.id}`, { cache: "no-store" });
+        const result = await response.json();
+        if (stopped) return;
+        if (["applied", "already_liked", "failed"].includes(result.status)) {
+          setManualMessage(result.status === "applied" ? "Mi piace confermato su @ma.menichelli" : result.status === "already_liked" ? "Il tuo Mi piace era già presente" : result.message || "Like non confermato");
+          if (result.status !== "failed") setLikeHistory(current => current ? { ...current, events: current.events.map(event => event.shortcode === manualLike.shortcode ? { ...event, status: result.status, likedAt: result.status === "applied" ? new Date().toISOString() : null } : event) } : current);
+          setManualLike(null);
+        } else if (Date.now() - started > 130_000) {
+          setManualMessage("Conferma non ricevuta: controlla il post prima di riprovare"); setManualLike(null);
+        }
+      } catch { if (!stopped) setManualMessage("Collegamento interrotto: attendo la conferma, senza ripetere il like"); }
+    };
+    const timer = window.setInterval(() => void poll(), 2000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [manualLike]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -853,22 +891,28 @@ export default function Home() {
         )}
         {(active === "Oggi" || active === "Attività") && (
           <article className="panel like-history-panel">
-            <div className="panel-head"><div><p className="eyebrow">LIKE AUTOMATICI · @{likeHistory?.accountUsername ?? "ma.menichelli"}</p><h2>Post e gruppi di provenienza</h2></div><span className="daily-count">{formatNumber(likeHistory?.total ?? 0)}</span></div>
-            <p className="like-history-note">Data e ora del like nel fuso italiano. Lo storico si aggiorna ogni 30 secondi.</p>
+            <div className="panel-head"><div><p className="eyebrow">LIKE SCELTI DA TE · @{likeHistory?.accountUsername ?? "ma.menichelli"}</p><h2>Post dei contatti</h2></div><span className="daily-count">{formatNumber(likeHistory?.total ?? 0)}</span></div>
+            <p className="like-history-note">Un clic su «Mi piace» agisce solo su quel post, senza uscire da Orbit. {likeHistory?.manualOnline ? "Collegamento Instagram attivo." : "Collegamento Instagram offline: accendi il PC e avvia l’agente manuale."}</p>
+            {manualMessage && <p className="like-history-note" role="status">{manualMessage}</p>}
             {likeHistoryError && <p role="status" className="sync-error">{likeHistoryError}. I dati già caricati restano visibili.</p>}
             {!likeHistory && !likeHistoryError && <p className="like-history-note">Caricamento dello storico…</p>}
-            {likeHistory && !likeHistory.total && <p className="like-history-note">Nessun evento ricevuto. I prossimi like confermati dall’agente compariranno qui.</p>}
+            {likeHistory && !likeHistory.total && <p className="like-history-note">Nessun post raccolto. L’agente deve prima leggere le conversazioni Generali.</p>}
             {likeHistory?.events.map(event => <div className="like-history-row" key={event.eventId}>
               <div className="like-history-result">
-                <strong>{event.status === "applied" ? "Like eseguito" : event.status === "already_liked" ? "Like già presente · non ripetuto" : "Registro precedente"}</strong>
+                {event.metadata?.previewUrl && <img className="manual-post-preview" src={event.metadata.previewUrl} alt="Anteprima del post" loading="lazy" referrerPolicy="no-referrer" onError={e => { e.currentTarget.hidden = true; }} />}
+                {event.metadata?.caption && <p className="manual-post-caption">{event.metadata.caption}</p>}
+                <strong>{event.status === "applied" ? "Like eseguito" : event.status === "already_liked" ? "Like già presente · non ripetuto" : event.status === "discovered" ? `Post ${event.shortcode}` : "Registro precedente"}</strong>
                 {event.likedAt ? <time dateTime={event.likedAt}>{likeDate(event.likedAt)}</time>
                   : event.status === "already_liked" ? <span>Verificato il {likeDate(event.observedAt)} · ora del like originale sconosciuta</span>
-                  : <span>Data e ora del like non registrate</span>}
+                  : <span>{event.status === "discovered" ? `Raccolto il ${likeDate(event.observedAt)} · nessun like eseguito` : "Data e ora del like non registrate"}</span>}
               </div>
               <div className="like-history-groups"><span>Gruppi / chat in cui è stato condiviso il post</span>
                 {event.groups.length ? event.groups.map(group => <a key={group.threadPath} href={`https://www.instagram.com${group.threadPath}`} target="_blank" rel="noreferrer">{group.title}</a>) : <span>Gruppo non registrato</span>}
               </div>
-              <a className="like-post-link" href={`https://www.instagram.com/p/${event.shortcode}/`} target="_blank" rel="noreferrer">Apri post ↗</a>
+              <button className="manual-like-button" disabled={Boolean(manualLike) || !likeHistory.manualOnline || ["applied", "already_liked"].includes(event.status)}
+                onClick={() => void requestManualLike(event.shortcode)} aria-label={`Mi piace al post ${event.shortcode}`}>
+                {manualLike?.shortcode === event.shortcode ? "Conferma in corso…" : ["applied", "already_liked"].includes(event.status) ? "♥ Mi piace presente" : "♡ Mi piace"}
+              </button>
             </div>)}
             {likeHistory && likeHistory.total > 20 && <div className="list-pagination">
               <span>20 post per pagina · {formatNumber(likeHistory.total)} registrati</span><div>

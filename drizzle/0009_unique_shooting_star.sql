@@ -1,0 +1,1 @@
+ALTER TABLE `browser_like_events` ADD `metadata_json` text DEFAULT '{}' NOT NULL;
