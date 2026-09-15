@@ -95,6 +95,19 @@ type QueueItem = {
 
 type AuditItem = { id: number; event_type: string; payload: string; created_at: string };
 
+type LikeHistory = {
+  accountUsername: string; page: number; pageSize: number; total: number; applied: number;
+  events: { eventId: string; shortcode: string; status: "applied" | "already_liked" | "legacy";
+    likedAt: string | null; observedAt: string; groups: { title: string; threadPath: string }[] }[];
+};
+
+function likeDate(value: string) {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat("it-IT", {
+    dateStyle: "short", timeStyle: "medium", timeZone: "Europe/Rome",
+  }).format(date) : "Orario non disponibile";
+}
+
 type GrowthState = {
   protectedProfiles: ProtectedProfile[];
   queue: QueueItem[];
@@ -292,6 +305,28 @@ export default function Home() {
   const [syncError, setSyncError] = useState("");
   const [hiddenActionIds, setHiddenActionIds] = useState<Set<number>>(() => new Set());
   const [listPages, setListPages] = useState<Record<string, number>>({});
+  const [likePage, setLikePage] = useState(1);
+  const [likeHistory, setLikeHistory] = useState<LikeHistory | null>(null);
+  const [likeHistoryError, setLikeHistoryError] = useState("");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const load = async () => {
+      try {
+        const response = await fetch(`/api/agent/instagram-likes?page=${likePage}`, {
+          cache: "no-store", signal: controller.signal,
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error ?? "Storico like non disponibile");
+        if (!controller.signal.aborted) { setLikeHistory(body as LikeHistory); setLikeHistoryError(""); }
+      } catch (error) {
+        if (!controller.signal.aborted) setLikeHistoryError(error instanceof Error ? error.message : "Storico like non disponibile");
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 30_000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, [likePage]);
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -815,6 +850,34 @@ export default function Home() {
               <div className="capability-row"><span>Lista intoccabili</span><strong className="ok">Attiva</strong></div>
             </article>
           </section>
+        )}
+        {(active === "Oggi" || active === "Attività") && (
+          <article className="panel like-history-panel">
+            <div className="panel-head"><div><p className="eyebrow">LIKE AUTOMATICI · @{likeHistory?.accountUsername ?? "ma.menichelli"}</p><h2>Post e gruppi di provenienza</h2></div><span className="daily-count">{formatNumber(likeHistory?.total ?? 0)}</span></div>
+            <p className="like-history-note">Data e ora del like nel fuso italiano. Lo storico si aggiorna ogni 30 secondi.</p>
+            {likeHistoryError && <p role="status" className="sync-error">{likeHistoryError}. I dati già caricati restano visibili.</p>}
+            {!likeHistory && !likeHistoryError && <p className="like-history-note">Caricamento dello storico…</p>}
+            {likeHistory && !likeHistory.total && <p className="like-history-note">Nessun evento ricevuto. I prossimi like confermati dall’agente compariranno qui.</p>}
+            {likeHistory?.events.map(event => <div className="like-history-row" key={event.eventId}>
+              <div className="like-history-result">
+                <strong>{event.status === "applied" ? "Like eseguito" : event.status === "already_liked" ? "Like già presente · non ripetuto" : "Registro precedente"}</strong>
+                {event.likedAt ? <time dateTime={event.likedAt}>{likeDate(event.likedAt)}</time>
+                  : event.status === "already_liked" ? <span>Verificato il {likeDate(event.observedAt)} · ora del like originale sconosciuta</span>
+                  : <span>Data e ora del like non registrate</span>}
+              </div>
+              <div className="like-history-groups"><span>Gruppi / chat in cui è stato condiviso il post</span>
+                {event.groups.length ? event.groups.map(group => <a key={group.threadPath} href={`https://www.instagram.com${group.threadPath}`} target="_blank" rel="noreferrer">{group.title}</a>) : <span>Gruppo non registrato</span>}
+              </div>
+              <a className="like-post-link" href={`https://www.instagram.com/p/${event.shortcode}/`} target="_blank" rel="noreferrer">Apri post ↗</a>
+            </div>)}
+            {likeHistory && likeHistory.total > 20 && <div className="list-pagination">
+              <span>20 post per pagina · {formatNumber(likeHistory.total)} registrati</span><div>
+                <button disabled={likePage <= 1} onClick={() => setLikePage(page => page - 1)}>← Precedenti</button>
+                <strong>{likePage} / {Math.ceil(likeHistory.total / 20)}</strong>
+                <button disabled={likePage * 20 >= likeHistory.total} onClick={() => setLikePage(page => page + 1)}>Successivi →</button>
+              </div>
+            </div>}
+          </article>
         )}
       </section>
 

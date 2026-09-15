@@ -25,6 +25,16 @@ export const auditEvents = sqliteTable("audit_events", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const browserLikeEvents = sqliteTable("browser_like_events", {
+  eventId: text("event_id").primaryKey(),
+  accountUsername: text("account_username").notNull(),
+  shortcode: text("shortcode").notNull(),
+  status: text("status").notNull(),
+  likedAt: text("liked_at"),
+  observedAt: text("observed_at").notNull(),
+  groupsJson: text("groups_json").notNull().default("[]"),
+}, (table) => [uniqueIndex("browser_like_events_account_post_idx").on(table.accountUsername, table.shortcode)]);
+
 export const relationshipCandidates = sqliteTable("relationship_candidates", {
   externalId: text("external_id").primaryKey(),
   displayName: text("display_name").notNull(),

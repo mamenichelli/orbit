@@ -53,6 +53,26 @@ class _HTTPSession:
 
 
 class InstagramWebSessionTests(TestCase):
+    def test_session_preserves_the_real_login_browser_user_agent(self):
+        session_id = "1234567890%3A" + ("x" * 40)
+        http = _HTTPSession()
+        with mock.patch.object(orbit.requests, "Session", return_value=http):
+            orbit.web_client_from_session_id(session_id, "test.account", "Real Edge login UA")
+        self.assertEqual(http.headers["User-Agent"], "Real Edge login UA")
+
+    def test_wrong_saved_account_is_rejected(self):
+        client = mock.Mock()
+        client._json_get.return_value = {"form_data": {"username": "primezone.it"}}
+        with mock.patch.object(orbit.keyring, "get_password", return_value="saved"), mock.patch.object(
+            orbit, "web_client_from_session_id", return_value=client
+        ):
+            with self.assertRaisesRegex(RuntimeError, "primezone.it"):
+                orbit.login_saved({"ORBIT_INSTAGRAM_USERNAME": "ma.menichelli"}, Path(".env.agent"))
+
+    def test_identity_never_uses_the_profile_being_viewed(self):
+        self.assertEqual(orbit.authenticated_username({"data": {"user": {"username": "ma.menichelli"}}}), "")
+        self.assertEqual(orbit.authenticated_username({"form_data": {"username": "ma.menichelli"}}), "ma.menichelli")
+
     def test_official_recurring_interactions_are_prioritized(self):
         session = _Response(
             {"gatewayUrl": "https://gateway.test/snapshot", "accessToken": "short-token"},

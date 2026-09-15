@@ -81,6 +81,15 @@ h1,h2 { font-family:"Manrope",sans-serif; margin:0; letter-spacing:-.5px; } h1{f
 .protected-panel textarea{width:100%;resize:vertical;border:1px solid #dce5e1;border-radius:8px;padding:10px;background:white;color:var(--ink);font:inherit;font-size:11px}
 .protected-panel input[type=file]{max-width:100%;font-size:10px;margin-bottom:10px}
 .protected-panel>.primary{margin-bottom:14px}
+.like-history-panel{margin-top:18px;padding:22px;min-width:0}
+.like-history-note{font-size:14px;color:var(--muted);line-height:1.5;margin:12px 0}
+.like-history-row{display:grid;grid-template-columns:minmax(200px,.8fr) minmax(0,1.3fr) auto;gap:20px;padding:18px 0;border-top:1px solid var(--line);align-items:start}
+.like-history-result,.like-history-groups{display:grid;gap:6px;min-width:0;font-size:14px;line-height:1.5}
+.like-history-result strong{font-size:16px}.like-history-result time{font-variant-numeric:tabular-nums}
+.like-history-result>span,.like-history-groups>span{color:var(--muted)}
+.like-history-groups a{color:var(--ink);overflow-wrap:anywhere;text-underline-offset:3px}
+.like-post-link{font-size:14px;color:var(--green);font-weight:700;white-space:nowrap}
+@media(max-width:760px){.like-history-row{grid-template-columns:1fr;gap:12px}.like-history-panel{padding:18px}}
 @media(max-width:760px){
   .strategy-live,.opportunities-focus .right-stack{grid-template-columns:1fr}
   .permission-banner{align-items:flex-start;flex-direction:column}.permission-banner a{width:100%;text-align:center}.media-row{grid-template-columns:28px minmax(0,1fr) auto}.media-stats{display:none!important}.module-grid{grid-template-columns:1fr}

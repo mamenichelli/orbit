@@ -18,6 +18,13 @@ from instagrapi.exceptions import LoginRequired, TwoFactorRequired
 
 KEYRING_SERVICE = "Orbit Social Growth - Instagram"
 INSTAGRAM_WEB_APP_ID = "936619743392459"
+WEB_IDENTITY_PATH = "/api/v1/accounts/edit/web_form_data/"
+
+
+def authenticated_username(payload: dict[str, Any]) -> str:
+    """Read the authenticated account, never the profile currently being viewed."""
+    form = payload.get("form_data") or {}
+    return str(form.get("username") or "").strip().lower()
 
 
 class InstagramRateLimited(RuntimeError):
@@ -58,6 +65,13 @@ def session_path(config_path: Path) -> Path:
     directory = config_path.parent / ".orbit-agent"
     directory.mkdir(parents=True, exist_ok=True)
     return directory / "instagram-session.json"
+
+
+def edge_profile_path(config_path: Path) -> Path:
+    """Dedicated clean login profile; do not reuse the previous One Tap/Primezone profile."""
+    username = required(load_config(config_path), "ORBIT_INSTAGRAM_USERNAME").lower()
+    safe_username = re.sub(r"[^a-z0-9_-]", "-", username)
+    return config_path.parent / ".orbit-agent" / f"edge-profile-{safe_username}-v2"
 
 
 def cooldown_path(config_path: Path) -> Path:
@@ -157,7 +171,7 @@ class InstagramWebSession:
 
     _orbit_auth_mode = "web"
 
-    def __init__(self, session_id: str, expected_username: str, user_id: str):
+    def __init__(self, session_id: str, expected_username: str, user_id: str, user_agent: str = ""):
         self.username = expected_username.strip().lstrip("@").lower()
         self.user_id = str(user_id)
         self._orbit_user_id = self.user_id
@@ -166,7 +180,7 @@ class InstagramWebSession:
             {
                 "Accept": "*/*",
                 "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
-                "User-Agent": (
+                "User-Agent": user_agent or (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/136.0.0.0 Safari/537.36"
@@ -294,14 +308,14 @@ def login_for_setup(username: str, password: str, settings_file: Path) -> Client
     return client
 
 
-def web_client_from_session_id(session_id: str, expected_username: str) -> InstagramWebSession:
+def web_client_from_session_id(session_id: str, expected_username: str, user_agent: str = "") -> InstagramWebSession:
     """Create a read-only web session; validation happens during sync."""
     user_match = re.match(r"^\d+", session_id)
     if not user_match or len(session_id) <= 30:
         raise RuntimeError("Session ID non valido")
 
     user_id = user_match.group(0)
-    client = InstagramWebSession(session_id, expected_username, user_id)
+    client = InstagramWebSession(session_id, expected_username, user_id, user_agent)
     return client
 
 
@@ -309,13 +323,38 @@ def login_with_browser(username: str, config_path: Path) -> InstagramWebSession:
     """Use Edge only to obtain a normal web cookie, then stay on the web API."""
     from playwright.sync_api import sync_playwright
 
-    browser_profile = config_path.parent / ".orbit-agent" / "edge-profile"
+    saved_cookie = keyring.get_password(KEYRING_SERVICE, f"{username}:sessionid")
+    if saved_cookie and not keyring.get_password(KEYRING_SERVICE, f"{username}:useragent"):
+        # Upgrade old local sessions using the actual installed, regular Edge UA.
+        # Save metadata only after Instagram confirms the expected account.
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel="msedge", headless=False)
+            try:
+                actual_ua = browser.new_page().evaluate("navigator.userAgent")
+            finally:
+                browser.close()
+        candidate = web_client_from_session_id(saved_cookie, username, actual_ua)
+        try:
+            identity = candidate._json_get(
+                WEB_IDENTITY_PATH, {},
+                "https://www.instagram.com/accounts/edit/",
+            )
+            actual = authenticated_username(identity)
+            if actual == username.lower():
+                keyring.set_password(KEYRING_SERVICE, f"{username}:useragent", actual_ua)
+                print(f"Sessione esistente verificata per @{actual}; nessun nuovo login necessario.")
+                return candidate
+        except (RuntimeError, requests.RequestException):
+            print("Sessione precedente non riutilizzabile; serve la verifica nel browser dedicato.")
+
+    browser_profile = edge_profile_path(config_path)
     browser_profile.mkdir(parents=True, exist_ok=True)
     session_id = ""
+    user_agent = ""
     last_mismatch = ""
     last_checked_cookie = ""
     last_verify_at = 0.0
-    print("Si apre Microsoft Edge: completa l'accesso Instagram nel browser.")
+    print(f"Si apre Edge con un NUOVO profilo dedicato a @{username}.")
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
             str(browser_profile),
@@ -325,7 +364,18 @@ def login_with_browser(username: str, config_path: Path) -> InstagramWebSession:
             args=["--start-maximized"],
         )
         page = context.pages[0] if context.pages else context.new_page()
-        page.goto("https://www.instagram.com/accounts/login/", wait_until="domcontentloaded")
+        page.goto(
+            f"https://www.instagram.com/accounts/login/?next=%2F{username}%2F",
+            wait_until="domcontentloaded",
+        )
+        login_name = page.locator('input[name="username"]')
+        try:
+            login_name.wait_for(state="visible", timeout=15_000)
+            login_name.fill(username)
+        except Exception:
+            print("Il modulo di accesso non è visibile: scegli 'Accedi a un altro account', non Primezone.")
+        page.bring_to_front()
+        print(f"Nella nuova finestra Edge completa solo l'accesso a @{username}; non premere 'Continua come Primezone'.")
         deadline = time.time() + 600
         while time.time() < deadline:
             cookies = context.cookies(["https://www.instagram.com"])
@@ -336,16 +386,17 @@ def login_with_browser(username: str, config_path: Path) -> InstagramWebSession:
                 last_verify_at = time.time()
                 try:
                     response = context.request.get(
-                        "https://www.instagram.com/api/v1/accounts/current_user/?edit=true",
+                        "https://www.instagram.com" + WEB_IDENTITY_PATH,
                         headers={"X-IG-App-ID": INSTAGRAM_WEB_APP_ID, "Accept": "application/json"},
                         timeout=10_000,
                     )
                     identity = response.json() if response.ok else {}
-                    actual = str((identity.get("user") or {}).get("username") or "").lower()
+                    actual = authenticated_username(identity)
                 except (ValueError, TypeError):
                     actual = ""
                 if actual == username.lower():
                     session_id = cookie_value
+                    user_agent = page.evaluate("navigator.userAgent")
                     break
                 if actual and actual != last_mismatch:
                     print(f"Profilo attivo @{actual}; seleziona @{username} nel browser. Nessuna sessione errata sarà salvata.")
@@ -355,7 +406,8 @@ def login_with_browser(username: str, config_path: Path) -> InstagramWebSession:
     if not session_id:
         raise RuntimeError("Accesso browser non completato entro 10 minuti")
 
-    client = web_client_from_session_id(session_id, username)
+    client = web_client_from_session_id(session_id, username, user_agent)
+    keyring.set_password(KEYRING_SERVICE, f"{username}:useragent", user_agent)
     keyring.set_password(KEYRING_SERVICE, f"{username}:sessionid", session_id)
     return client
 
@@ -376,12 +428,13 @@ def login_saved(config: dict[str, str], config_path: Path) -> Any:
     if not saved_session_id and not password:
         raise RuntimeError("Credenziale locale assente. Esegui di nuovo agent/setup.ps1.")
     if saved_session_id:
-        client = web_client_from_session_id(saved_session_id, username)
+        user_agent = keyring.get_password(KEYRING_SERVICE, f"{username}:useragent") or ""
+        client = web_client_from_session_id(saved_session_id, username, user_agent)
         identity = client._json_get(
-            "/api/v1/accounts/current_user/", {"edit": "true"},
+            WEB_IDENTITY_PATH, {},
             "https://www.instagram.com/accounts/edit/",
         )
-        actual = str((identity.get("user") or {}).get("username") or "").lower()
+        actual = authenticated_username(identity)
         if actual != username.lower():
             raise RuntimeError(
                 f"Sessione Instagram attiva per @{actual or 'sconosciuto'}, atteso @{username}. "
@@ -753,7 +806,7 @@ def discover_candidates_with_browser(
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     from playwright.sync_api import sync_playwright
 
-    browser_profile = config_path.parent / ".orbit-agent" / "edge-profile"
+    browser_profile = edge_profile_path(config_path)
     if not browser_profile.exists():
         raise RuntimeError("Profilo browser Instagram assente; esegui setup.ps1 -AuthMode browser")
 
@@ -787,6 +840,8 @@ def discover_candidates_with_browser(
             context = browser.new_context(
                 locale="it-IT",
                 viewport={"width": 1440, "height": 1000},
+                **({"user_agent": keyring.get_password(KEYRING_SERVICE, f"{configured_username}:useragent")}
+                   if keyring.get_password(KEYRING_SERVICE, f"{configured_username}:useragent") else {}),
             )
         else:
             context = playwright.chromium.launch_persistent_context(
