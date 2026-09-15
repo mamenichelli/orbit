@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Capabilities = {
   profile?: boolean;
@@ -310,6 +310,22 @@ export default function Home() {
   const [likeHistoryError, setLikeHistoryError] = useState("");
   const [manualLike, setManualLike] = useState<{ id: string; shortcode: string } | null>(null);
   const [manualMessage, setManualMessage] = useState("");
+  const hiddenPosts = useRef(new Set<string>());
+  const skipPost = async (shortcode: string) => {
+    if (manualLike || hiddenPosts.current.has(shortcode)) return;
+    const previous = likeHistory?.events.find(event => event.shortcode === shortcode);
+    hiddenPosts.current.add(shortcode);
+    setLikeHistory(current => current ? { ...current, total: Math.max(0, current.total - 1), events: current.events.filter(event => event.shortcode !== shortcode) } : current);
+    try {
+      const response = await fetch("/api/instagram/skip-post", { method: "POST", headers: { "content-type": "application/json", "x-orbit-manual": "1" }, body: JSON.stringify({ shortcode }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Skip non salvato");
+    } catch (error) {
+      hiddenPosts.current.delete(shortcode);
+      setLikeHistory(current => current ? { ...current, total: current.total + 1, events: previous && !current.events.some(event => event.shortcode === shortcode) ? [previous, ...current.events].slice(0, 20) : current.events } : current);
+      setManualMessage(error instanceof Error ? error.message : "Skip non salvato: riprova");
+    }
+  };
 
   const requestManualLike = async (shortcode: string) => {
     if (manualLike) return;
@@ -356,7 +372,7 @@ export default function Home() {
         });
         const body = await response.json();
         if (!response.ok) throw new Error(body.error ?? "Storico like non disponibile");
-        if (!controller.signal.aborted) { setLikeHistory(body as LikeHistory); setLikeHistoryError(""); }
+        if (!controller.signal.aborted) { const result = body as LikeHistory; const hidden = result.events.filter(event => hiddenPosts.current.has(event.shortcode)); setLikeHistory({ ...result, total: Math.max(0, result.total - hidden.length), events: result.events.filter(event => !hiddenPosts.current.has(event.shortcode)) }); setLikeHistoryError(""); }
       } catch (error) {
         if (!controller.signal.aborted) setLikeHistoryError(error instanceof Error ? error.message : "Storico like non disponibile");
       }
@@ -911,10 +927,11 @@ export default function Home() {
               <div className="like-history-groups"><span>Gruppi / chat in cui è stato condiviso il post</span>
                 {event.groups.length ? event.groups.map(group => <a key={group.threadPath} href={`https://www.instagram.com${group.threadPath}`} target="_blank" rel="noreferrer">{group.title}</a>) : <span>Gruppo non registrato</span>}
               </div>
-              <button className="manual-like-button" disabled={Boolean(manualLike) || !likeHistory.manualOnline || ["applied", "already_liked"].includes(event.status)}
+              <div className="manual-post-actions"><button className="manual-like-button" disabled={Boolean(manualLike) || !likeHistory.manualOnline || ["applied", "already_liked"].includes(event.status)}
                 onClick={() => void requestManualLike(event.shortcode)} aria-label={`Mi piace al post ${event.shortcode}`}>
                 {manualLike?.shortcode === event.shortcode ? "Conferma in corso…" : ["applied", "already_liked"].includes(event.status) ? "♥ Mi piace presente" : "♡ Mi piace"}
               </button>
+              <button className="skip-post-button" disabled={Boolean(manualLike)} onClick={() => void skipPost(event.shortcode)} aria-label={`Salta definitivamente il post ${event.shortcode}`}>Skip</button></div>
             </div>)}
             {likeHistory && likeHistory.total > 20 && <div className="list-pagination">
               <span>20 post per pagina · {formatNumber(likeHistory.total)} registrati</span><div>

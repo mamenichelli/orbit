@@ -97,12 +97,38 @@ def select_general(page):
     tab = page.get_by_role("tab", name=re.compile(r"^General$|^Generali$|^Generale$", re.I))
     tab.first.wait_for(state="visible", timeout=30000)
     if not general_selected(page):
-        tab.first.click()
-        deadline = time.monotonic() + 15
-        while not general_selected(page) and time.monotonic() < deadline:
+        # aria-selected changes before Instagram replaces the inbox rows.
+        # Remember Primary's rows and do not accept them as General during loading.
+        previous = inbox_signature(page)
+        deadline = time.monotonic() + 20
+        while not previous and time.monotonic() < deadline:
             page.wait_for_timeout(250)
-        page.wait_for_timeout(2500)
+            previous = inbox_signature(page)
+        tab.first.click()
+        deadline = time.monotonic() + 30
+        last = None
+        stable = 0
+        while time.monotonic() < deadline:
+            signature = inbox_signature(page)
+            if general_selected(page) and signature and signature != previous:
+                stable = stable + 1 if signature == last else 0
+                if stable >= 4: break
+            else: stable = 0
+            last = signature
+            page.wait_for_timeout(250)
+        else: raise RuntimeError("Elenco Generale non caricato o ancora uguale a Principale: nessun post importato")
     assert_general(page)
+
+
+def inbox_signature(page):
+    return page.evaluate('''() => {
+      const tabs=document.querySelector('[role="tablist"]');if(!tabs)return '';
+      const pane=tabs.getBoundingClientRect();
+      return Array.from(document.querySelectorAll('[role="button"]')).filter(n=>{
+        const r=n.getBoundingClientRect();return Math.abs(r.x-pane.x)<20 && Math.abs(r.width-pane.width)<20
+          && r.height>=50 && r.height<=160 && n.querySelector('img') && n.innerText.trim();
+      }).map(n=>n.innerText.trim().split(String.fromCharCode(10))[0]+'|'+(n.querySelector('img')?.src||'').split('?')[0]).join('||');
+    }''')
 
 
 def mark_general_rows(page):
@@ -238,7 +264,19 @@ def collect(config_path, publish_approved=False, history_pages=40):
                     visited.add(row["key"])
                     observed_title = str(row["title"]).strip()
                     if not observed_title: continue
-                    group = {"title": observed_title[:200], "threadPath": urlparse(page.url).path.rstrip("/") + "/", "folder": "general"}
+                    header = page.get_by_role("button", name=re.compile(r"Open the details pane of the chat|Apri.*dettagli.*chat", re.I)).first
+                    try:
+                        header.wait_for(state="visible", timeout=20000)
+                        deadline = time.monotonic() + 20
+                        while header.inner_text().strip()[:200] != observed_title[:200] and time.monotonic() < deadline:
+                            page.wait_for_timeout(250)
+                        if header.inner_text().strip()[:200] != observed_title[:200]:
+                            print("Intestazione chat non corrispondente a Generale: post esclusi", flush=True)
+                            continue
+                    except BrowserTimeout:
+                        print("Intestazione chat non confermata: post esclusi", flush=True)
+                        continue
+                    group = {"title": observed_title[:200], "threadPath": urlparse(page.url).path.rstrip("/") + "/", "folder": "general", "verification": "general-roster-v2"}
                     groups += 1
                     seen = set()
                     for _ in range(history_pages):

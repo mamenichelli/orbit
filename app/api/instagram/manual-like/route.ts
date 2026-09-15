@@ -1,5 +1,5 @@
 import { getRawDb } from "@/db";
-import { instagramAccount, manualAgentOnline, generalPostPredicate } from "@/app/instagram-manual";
+import { instagramAccount, manualAgentOnline, generalPostPredicate, visibleGeneralPostPredicate } from "@/app/instagram-manual";
 
 export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
@@ -27,11 +27,13 @@ export async function POST(request: Request) {
   if (!(await manualAgentOnline())) return Response.json({ error: "Agente Instagram offline: il PC deve essere acceso e la sessione verificata" }, { status: 503 });
   const post = await db.prepare(`SELECT status FROM browser_like_events WHERE account_username = ? AND shortcode = ? AND ${generalPostPredicate}`).bind(instagramAccount, body.shortcode).first<{ status: string }>();
   if (!post) return Response.json({ error: "Post non presente nell’elenco" }, { status: 404 });
-  if (["applied", "already_liked"].includes(post.status)) return Response.json({ error: "Like già confermato" }, { status: 409 });
+  if (["applied", "already_liked", "skipped"].includes(post.status)) return Response.json({ error: "Post già completato o saltato" }, { status: 409 });
   // Atomic partial uniqueness prevents parallel clicks from becoming a batch.
   const inserted = await db.prepare(`INSERT OR IGNORE INTO instagram_manual_likes
-    (id, account_username, shortcode, requested_by, status, requested_at) VALUES (?, ?, ?, ?, 'pending', ?)`)
-    .bind(body.id, instagramAccount, body.shortcode, user, Date.now()).run();
+    (id, account_username, shortcode, requested_by, status, requested_at)
+    SELECT ?, ?, ?, ?, 'pending', ? WHERE EXISTS
+    (SELECT 1 FROM browser_like_events WHERE account_username=? AND shortcode=? AND ${visibleGeneralPostPredicate})`)
+    .bind(body.id, instagramAccount, body.shortcode, user, Date.now(), instagramAccount, body.shortcode).run();
   if (!inserted.meta.changes) return Response.json({ error: "Attendi la conferma del like in corso prima di sceglierne un altro" }, { status: 409 });
   return Response.json({ id: body.id, shortcode: body.shortcode, status: "pending" }, { status: 202 });
 }

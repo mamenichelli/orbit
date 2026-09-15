@@ -1,5 +1,5 @@
 import { getRawDb } from "@/db";
-import { instagramAccount, isInstagramAgent, generalPostPredicate } from "@/app/instagram-manual";
+import { instagramAccount, isInstagramAgent, visibleGeneralPostPredicate } from "@/app/instagram-manual";
 
 export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
@@ -15,7 +15,7 @@ export async function POST(request: Request) {
       db.prepare("UPDATE instagram_manual_likes SET status='failed', message='Richiesta scaduta o conferma interrotta: controlla il post prima di riprovare', finished_at=? WHERE account_username=? AND status IN ('pending','executing') AND requested_at < ?").bind(now, instagramAccount, now - 120_000),
       db.prepare(`UPDATE instagram_manual_likes SET status='failed', message='Post non verificato nella cartella Generale', finished_at=?
         WHERE account_username=? AND status='pending' AND shortcode NOT IN
-          (SELECT shortcode FROM browser_like_events WHERE account_username=? AND ${generalPostPredicate})`).bind(now, instagramAccount, instagramAccount),
+          (SELECT shortcode FROM browser_like_events WHERE account_username=? AND ${visibleGeneralPostPredicate})`).bind(now, instagramAccount, instagramAccount),
     ]);
     const job = await db.prepare(`UPDATE instagram_manual_likes SET status='executing'
       WHERE id=(SELECT id FROM instagram_manual_likes WHERE account_username=? AND status='pending' AND requested_at>=? ORDER BY requested_at LIMIT 1)

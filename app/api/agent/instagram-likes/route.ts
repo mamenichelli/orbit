@@ -14,7 +14,7 @@ async function agentAuthorized(request: Request) {
   return left.every((value, index) => value === right[index]);
 }
 
-type Group = { title: string; threadPath: string; folder?: "general" };
+type Group = { title: string; threadPath: string; folder?: "general"; verification?: "general-roster-v2" };
 type LikeEvent = { eventId: string; shortcode: string; status: string; likedAt: string | null; observedAt: string; groups: Group[]; metadata?: { caption?: string; previewUrl?: string; authorUsername?: string; publishedAt?: string | null } };
 function safePreview(value: unknown) {
   if (value === undefined || value === "") return true;
@@ -49,7 +49,8 @@ export async function POST(request: Request) {
       || !Array.isArray(event.groups) || event.groups.length > 50
       || event.groups.some(group => !group || typeof group.title !== "string" || !group.title.trim()
         || group.title.length > 200 || !/^\/direct\/t\/[^/?#\s]+\/$/.test(group.threadPath ?? "")
-        || (group.folder !== undefined && group.folder !== "general"))) {
+        || (group.folder !== undefined && group.folder !== "general")
+        || (group.verification !== undefined && (group.verification !== "general-roster-v2" || group.folder !== "general")))) {
       return Response.json({ error: "Evento non valido" }, { status: 400 });
     }
   }
@@ -90,7 +91,7 @@ export async function GET(request: Request) {
       manualOnline: await manualAgentOnline(),
       events: (rows.results ?? []).map(row => ({ eventId: row.event_id, shortcode: row.shortcode,
         status: row.status, likedAt: row.liked_at, observedAt: row.observed_at,
-        groups: (JSON.parse(row.groups_json) as Group[]).filter(group => group.folder === "general"),
+        groups: (JSON.parse(row.groups_json) as Group[]).filter(group => group.folder === "general" && group.verification === "general-roster-v2"),
         metadata: (() => { const metadata = JSON.parse(row.metadata_json); return { authorUsername: metadata.authorUsername ?? "", publishedAt: metadata.publishedAt ?? null }; })() })),
     }, { headers: { "cache-control": "no-store" } });
   } catch {
