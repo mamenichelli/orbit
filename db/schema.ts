@@ -49,8 +49,12 @@ export const instagramManualLikes = sqliteTable("instagram_manual_likes", {
   requestedAt: integer("requested_at").notNull(),
   finishedAt: integer("finished_at"),
   message: text("message").notNull().default(""),
-}, table => [uniqueIndex("instagram_manual_likes_one_active_account").on(table.accountUsername)
-  .where(sql`${table.status} IN ('pending', 'executing')`)]);
+}, table => [
+  uniqueIndex("instagram_manual_likes_one_active_post").on(table.accountUsername, table.shortcode)
+    .where(sql`${table.status} IN ('pending', 'executing')`),
+  uniqueIndex("instagram_manual_likes_one_executing_account").on(table.accountUsername)
+    .where(sql`${table.status} = 'executing'`),
+]);
 
 export const relationshipCandidates = sqliteTable("relationship_candidates", {
   externalId: text("external_id").primaryKey(),

@@ -28,12 +28,12 @@ export async function POST(request: Request) {
   const post = await db.prepare(`SELECT status FROM browser_like_events WHERE account_username = ? AND shortcode = ? AND ${generalPostPredicate}`).bind(instagramAccount, body.shortcode).first<{ status: string }>();
   if (!post) return Response.json({ error: "Post non presente nell’elenco" }, { status: 404 });
   if (["applied", "already_liked", "skipped"].includes(post.status)) return Response.json({ error: "Post già completato o saltato" }, { status: 409 });
-  // Atomic partial uniqueness prevents parallel clicks from becoming a batch.
+  // Each explicit click is independent; duplicate clicks on the same post are blocked.
   const inserted = await db.prepare(`INSERT OR IGNORE INTO instagram_manual_likes
     (id, account_username, shortcode, requested_by, status, requested_at)
     SELECT ?, ?, ?, ?, 'pending', ? WHERE EXISTS
     (SELECT 1 FROM browser_like_events WHERE account_username=? AND shortcode=? AND ${visibleGeneralPostPredicate})`)
     .bind(body.id, instagramAccount, body.shortcode, user, Date.now(), instagramAccount, body.shortcode).run();
-  if (!inserted.meta.changes) return Response.json({ error: "Attendi la conferma del like in corso prima di sceglierne un altro" }, { status: 409 });
+  if (!inserted.meta.changes) return Response.json({ error: "Questo post è già in attesa oppure non è più disponibile" }, { status: 409 });
   return Response.json({ id: body.id, shortcode: body.shortcode, status: "pending" }, { status: 202 });
 }

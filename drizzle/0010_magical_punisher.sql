@@ -1,0 +1,3 @@
+DROP INDEX `instagram_manual_likes_one_active_account`;--> statement-breakpoint
+CREATE UNIQUE INDEX `instagram_manual_likes_one_active_post` ON `instagram_manual_likes` (`account_username`,`shortcode`) WHERE "instagram_manual_likes"."status" IN ('pending', 'executing');--> statement-breakpoint
+CREATE UNIQUE INDEX `instagram_manual_likes_one_executing_account` ON `instagram_manual_likes` (`account_username`) WHERE "instagram_manual_likes"."status" = 'executing';

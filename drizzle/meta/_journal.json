@@ -71,6 +71,13 @@
       "when": 1789474624491,
       "tag": "0009_unique_shooting_star",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1789499995674,
+      "tag": "0010_magical_punisher",
+      "breakpoints": true
     }
   ]
 }

@@ -18,8 +18,9 @@ export async function POST(request: Request) {
           (SELECT shortcode FROM browser_like_events WHERE account_username=? AND ${visibleGeneralPostPredicate})`).bind(now, instagramAccount, instagramAccount),
     ]);
     const job = await db.prepare(`UPDATE instagram_manual_likes SET status='executing'
-      WHERE id=(SELECT id FROM instagram_manual_likes WHERE account_username=? AND status='pending' AND requested_at>=? ORDER BY requested_at LIMIT 1)
-      RETURNING id, shortcode, requested_at`).bind(instagramAccount, now - 120_000).first();
+      WHERE id=(SELECT id FROM instagram_manual_likes WHERE account_username=? AND status='pending' AND requested_at>=? ORDER BY requested_at, id LIMIT 1)
+      AND NOT EXISTS (SELECT 1 FROM instagram_manual_likes WHERE account_username=? AND status='executing')
+      RETURNING id, shortcode, requested_at`).bind(instagramAccount, now - 120_000, instagramAccount).first();
     return Response.json({ ok: true, job }, { headers: { "cache-control": "no-store" } });
   }
   if (body.action !== "complete" || !/^[a-zA-Z0-9_-]{1,100}$/.test(body.id ?? "") || !["applied", "already_liked", "failed"].includes(body.status ?? ""))

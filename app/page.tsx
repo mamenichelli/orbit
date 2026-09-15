@@ -308,11 +308,12 @@ export default function Home() {
   const [likePage, setLikePage] = useState(1);
   const [likeHistory, setLikeHistory] = useState<LikeHistory | null>(null);
   const [likeHistoryError, setLikeHistoryError] = useState("");
-  const [manualLike, setManualLike] = useState<{ id: string; shortcode: string } | null>(null);
+  const [manualLikes, setManualLikes] = useState<Record<string, { id: string; startedAt: number }>>({});
+  const manualRequests = useRef<Record<string, { id: string; startedAt: number }>>({});
   const [manualMessage, setManualMessage] = useState("");
   const hiddenPosts = useRef(new Set<string>());
   const skipPost = async (shortcode: string) => {
-    if (manualLike || hiddenPosts.current.has(shortcode)) return;
+    if (manualRequests.current[shortcode] || hiddenPosts.current.has(shortcode)) return;
     const previous = likeHistory?.events.find(event => event.shortcode === shortcode);
     hiddenPosts.current.add(shortcode);
     setLikeHistory(current => current ? { ...current, total: Math.max(0, current.total - 1), events: current.events.filter(event => event.shortcode !== shortcode) } : current);
@@ -328,40 +329,51 @@ export default function Home() {
   };
 
   const requestManualLike = async (shortcode: string) => {
-    if (manualLike) return;
+    if (manualRequests.current[shortcode] || hiddenPosts.current.has(shortcode)) return;
     const id = crypto.randomUUID();
-    setManualLike({ id, shortcode }); setManualMessage("");
+    manualRequests.current[shortcode] = { id, startedAt: Date.now() };
+    setManualLikes({ ...manualRequests.current }); setManualMessage("");
     try {
       const response = await fetch("/api/instagram/manual-like", { method: "POST", headers: { "content-type": "application/json", "x-orbit-manual": "1" }, body: JSON.stringify({ id, shortcode }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Like non richiesto");
     } catch (error) {
       setManualMessage(error instanceof Error ? error.message : "Richiesta non confermata: controlla prima di riprovare");
-      setManualLike(null);
+      delete manualRequests.current[shortcode];
+      setManualLikes({ ...manualRequests.current });
     }
   };
 
   useEffect(() => {
-    if (!manualLike) return;
     let stopped = false;
-    const started = Date.now();
+    let polling = false;
     const poll = async () => {
-      try {
-        const response = await fetch(`/api/instagram/manual-like?id=${manualLike.id}`, { cache: "no-store" });
+      if (polling) return;
+      polling = true;
+      await Promise.all(Object.entries(manualRequests.current).map(async ([shortcode, job]) => {
+       try {
+        const response = await fetch(`/api/instagram/manual-like?id=${job.id}`, { cache: "no-store" });
         const result = await response.json();
-        if (stopped) return;
+        if (stopped || manualRequests.current[shortcode]?.id !== job.id) return;
         if (["applied", "already_liked", "failed"].includes(result.status)) {
           setManualMessage(result.status === "applied" ? "Mi piace confermato su @ma.menichelli" : result.status === "already_liked" ? "Il tuo Mi piace era già presente" : result.message || "Like non confermato");
-          if (result.status !== "failed") setLikeHistory(current => current ? { ...current, total: Math.max(0, current.total - 1), events: current.events.filter(event => event.shortcode !== manualLike.shortcode) } : current);
-          setManualLike(null);
-        } else if (Date.now() - started > 130_000) {
-          setManualMessage("Conferma non ricevuta: controlla il post prima di riprovare"); setManualLike(null);
+          if (result.status !== "failed") {
+            hiddenPosts.current.add(shortcode);
+            setLikeHistory(current => current ? { ...current, total: Math.max(0, current.total - Number(current.events.some(event => event.shortcode === shortcode))), events: current.events.filter(event => event.shortcode !== shortcode) } : current);
+          }
+          delete manualRequests.current[shortcode];
+          setManualLikes({ ...manualRequests.current });
+        } else if (Date.now() - job.startedAt > 130_000) {
+          setManualMessage("Conferma non ricevuta: controlla il post prima di riprovare");
+          delete manualRequests.current[shortcode]; setManualLikes({ ...manualRequests.current });
         }
-      } catch { if (!stopped) setManualMessage("Collegamento interrotto: attendo la conferma, senza ripetere il like"); }
+       } catch { if (!stopped) setManualMessage("Collegamento interrotto: attendo la conferma, senza ripetere il like"); }
+      }));
+      polling = false;
     };
     const timer = window.setInterval(() => void poll(), 2000);
     return () => { stopped = true; window.clearInterval(timer); };
-  }, [manualLike]);
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -927,11 +939,11 @@ export default function Home() {
               <div className="like-history-groups"><span>Gruppi / chat in cui è stato condiviso il post</span>
                 {event.groups.length ? event.groups.map(group => <a key={group.threadPath} href={`https://www.instagram.com${group.threadPath}`} target="_blank" rel="noreferrer">{group.title}</a>) : <span>Gruppo non registrato</span>}
               </div>
-              <div className="manual-post-actions"><button className="manual-like-button" disabled={Boolean(manualLike) || !likeHistory.manualOnline || ["applied", "already_liked"].includes(event.status)}
+              <div className="manual-post-actions"><button className="manual-like-button" disabled={Boolean(manualLikes[event.shortcode]) || !likeHistory.manualOnline || ["applied", "already_liked"].includes(event.status)} aria-busy={Boolean(manualLikes[event.shortcode])}
                 onClick={() => void requestManualLike(event.shortcode)} aria-label={`Mi piace al post ${event.shortcode}`}>
-                {manualLike?.shortcode === event.shortcode ? "Conferma in corso…" : ["applied", "already_liked"].includes(event.status) ? "♥ Mi piace presente" : "♡ Mi piace"}
+                {manualLikes[event.shortcode] ? "Conferma in corso…" : ["applied", "already_liked"].includes(event.status) ? "♥ Mi piace presente" : "♡ Mi piace"}
               </button>
-              <button className="skip-post-button" disabled={Boolean(manualLike)} onClick={() => void skipPost(event.shortcode)} aria-label={`Salta definitivamente il post ${event.shortcode}`}>Skip</button></div>
+              <button className="skip-post-button" disabled={Boolean(manualLikes[event.shortcode])} onClick={() => void skipPost(event.shortcode)} aria-label={`Salta definitivamente il post ${event.shortcode}`}>Skip</button></div>
             </div>)}
             {likeHistory && likeHistory.total > 20 && <div className="list-pagination">
               <span>20 post per pagina · {formatNumber(likeHistory.total)} registrati</span><div>
