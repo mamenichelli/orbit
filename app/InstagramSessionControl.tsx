@@ -66,14 +66,15 @@ export default function InstagramSessionControl() {
   const status = state.error
     ? state.error
     : pending
-      ? "Il collector aprirà Edge sul PC e salverà la nuova sessione."
+      ? "Orbit sta aprendo Edge sul PC per rinnovare la sessione dei Direct → Generali."
       : online
-        ? "Collector Generali collegato."
-        : "Il comando resta disponibile; il PC deve avere l'agente Orbit aggiornato e attivo.";
+        ? "Collector Direct → Generali collegato."
+        : "Se la sessione è scaduta, premi il pulsante: il collector riaprirà Edge e riprenderà la raccolta.";
 
   return (
-    <aside style={{ position: "fixed", right: 20, bottom: 20, zIndex: 1000, width: 320, padding: 14, borderRadius: 16,
+    <aside data-orbit-instagram-session-control style={{ position: "fixed", right: 20, bottom: 20, zIndex: 1000, width: 330, padding: 14, borderRadius: 16,
       background: "rgba(17,24,39,.96)", color: "white", boxShadow: "0 18px 50px rgba(0,0,0,.28)", fontFamily: "inherit" }}>
+      <div style={{ marginBottom: 9, fontSize: 11, fontWeight: 800, letterSpacing: ".08em", color: "#f4c95d" }}>DIRECT → GENERALI</div>
       <button type="button" onClick={() => void requestAuth()} disabled={busy || pending}
         style={{ width: "100%", border: 0, borderRadius: 12, padding: "12px 14px", cursor: busy || pending ? "default" : "pointer",
           fontWeight: 800, background: pending ? "#374151" : "#f4c95d", color: pending ? "#fff" : "#111827" }}>
