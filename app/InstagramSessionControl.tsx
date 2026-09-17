@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 
 type AuthState = {
   requested_at: number;
@@ -21,17 +22,31 @@ const emptyState: AuthState = {
 export default function InstagramSessionControl() {
   const [state, setState] = useState<AuthState>(emptyState);
   const [busy, setBusy] = useState(false);
-  const [visible, setVisible] = useState(true);
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
 
   const refresh = useCallback(async () => {
     try {
       const response = await fetch("/api/instagram/browser-auth", { cache: "no-store" });
-      if (response.status === 401) { setVisible(false); return; }
-      const body = await response.json();
-      if (response.ok) setState(body as AuthState);
+      const body = await response.json().catch(() => ({}));
+      if (response.ok) {
+        setState(body as AuthState);
+      } else {
+        setState(current => ({ ...current, error: body.error ?? "Stato sessione Instagram non disponibile" }));
+      }
     } catch {
-      // Keep the control visible: a queued request can still be retried later.
+      setState(current => ({ ...current, error: "Stato sessione Instagram non disponibile" }));
     }
+  }, []);
+
+  useEffect(() => {
+    const findSettingsModal = () => {
+      const dialog = document.querySelector<HTMLElement>('.modal[role="dialog"], section.modal[aria-modal="true"], [role="dialog"]');
+      setPortalTarget(dialog);
+    };
+    findSettingsModal();
+    const observer = new MutationObserver(findSettingsModal);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
   }, []);
 
   useEffect(() => {
@@ -43,12 +58,13 @@ export default function InstagramSessionControl() {
   const requestAuth = async () => {
     if (busy || state.requested_at > state.completed_request_at) return;
     setBusy(true);
+    setState(current => ({ ...current, error: "" }));
     try {
       const response = await fetch("/api/instagram/browser-auth", {
         method: "POST",
         headers: { "x-orbit-manual": "1" },
       });
-      const body = await response.json();
+      const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error ?? "Rinnovo non richiesto");
       setState(body as AuthState);
     } catch (error) {
@@ -58,7 +74,8 @@ export default function InstagramSessionControl() {
     }
   };
 
-  if (!visible) return null;
+  if (!portalTarget) return null;
+
   const pending = state.requested_at > state.completed_request_at;
   const started = pending && state.started_request_at >= state.requested_at;
   const online = state.last_seen > 0 && Date.now() - state.last_seen < 120_000;
@@ -66,21 +83,25 @@ export default function InstagramSessionControl() {
   const status = state.error
     ? state.error
     : pending
-      ? "Orbit sta aprendo Edge sul PC per rinnovare la sessione dei Direct → Generali."
+      ? "Orbit sta chiedendo al PC dell'agente di aprire Edge e rinnovare la sessione dei Direct → Generali."
       : online
-        ? "Collector Direct → Generali collegato."
-        : "Se la sessione è scaduta, premi il pulsante: il collector riaprirà Edge e riprenderà la raccolta.";
+        ? "Collector Direct → Generali collegato e in ascolto."
+        : "Usa questo comando quando la sessione browser dei Direct scade. Il collector riprenderà la raccolta dopo il nuovo accesso.";
 
-  return (
-    <aside data-orbit-instagram-session-control style={{ position: "fixed", right: 20, bottom: 20, zIndex: 1000, width: 330, padding: 14, borderRadius: 16,
-      background: "rgba(17,24,39,.96)", color: "white", boxShadow: "0 18px 50px rgba(0,0,0,.28)", fontFamily: "inherit" }}>
-      <div style={{ marginBottom: 9, fontSize: 11, fontWeight: 800, letterSpacing: ".08em", color: "#f4c95d" }}>DIRECT → GENERALI</div>
-      <button type="button" onClick={() => void requestAuth()} disabled={busy || pending}
-        style={{ width: "100%", border: 0, borderRadius: 12, padding: "12px 14px", cursor: busy || pending ? "default" : "pointer",
-          fontWeight: 800, background: pending ? "#374151" : "#f4c95d", color: pending ? "#fff" : "#111827" }}>
+  return createPortal(
+    <div data-orbit-instagram-session-control style={{ marginTop: 18, padding: 16, border: "1px solid #dfe7e1", borderRadius: 14, background: "#f7faf8" }}>
+      <strong style={{ display: "block", marginBottom: 4, color: "#123c31" }}>Sessione Direct → Generali</strong>
+      <span style={{ display: "block", marginBottom: 12, fontSize: 13, lineHeight: 1.45, color: "#66756e" }}>
+        Rinnova la sessione browser usata per leggere tutti i post e reel condivisi nella cartella Generali dei Direct.
+      </span>
+      <button type="button" className="secondary" onClick={() => void requestAuth()} disabled={busy || pending}
+        style={{ width: "100%", minHeight: 44, fontWeight: 800 }}>
         {busy ? "Invio richiesta…" : label}
       </button>
-      <div style={{ marginTop: 9, fontSize: 12, lineHeight: 1.35, color: state.error ? "#fecaca" : "#d1d5db" }}>{status}</div>
-    </aside>
+      <span role="status" style={{ display: "block", marginTop: 10, fontSize: 12, lineHeight: 1.4, color: state.error ? "#a33" : "#66756e" }}>
+        {status}
+      </span>
+    </div>,
+    portalTarget,
   );
 }
