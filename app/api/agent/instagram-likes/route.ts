@@ -1,5 +1,5 @@
 import { getRawDb } from "@/db";
-import { manualAgentOnline, visibleGeneralPostPredicate } from "@/app/instagram-manual";
+import { generalPostPredicate, manualAgentOnline, visibleGeneralPostPredicate } from "@/app/instagram-manual";
 
 export const dynamic = "force-dynamic";
 const account = process.env.ORBIT_INSTAGRAM_USERNAME ?? "ma.menichelli";
@@ -78,16 +78,20 @@ export async function GET(request: Request) {
   const page = Number.isFinite(rawPage) ? Math.max(1, Math.min(100000, Math.floor(rawPage))) : 1;
   try {
     const db = getRawDb();
-    const [rows, counts] = await Promise.all([
+    const [rows, counts, verifiedCounts] = await Promise.all([
       db.prepare(`SELECT event_id, shortcode, status, liked_at, observed_at, groups_json, metadata_json
         FROM browser_like_events WHERE account_username = ? AND ${visibleGeneralPostPredicate}
         ORDER BY COALESCE(liked_at, observed_at) DESC, event_id DESC LIMIT 20 OFFSET ?`)
         .bind(account, (page - 1) * 20).all<{ event_id: string; shortcode: string; status: string; liked_at: string | null; observed_at: string; groups_json: string; metadata_json: string }>(),
       db.prepare(`SELECT COUNT(*) AS total, SUM(status = 'applied') AS applied
         FROM browser_like_events WHERE account_username = ? AND ${visibleGeneralPostPredicate}`).bind(account).first<{ total: number; applied: number | null }>(),
+      db.prepare(`SELECT COUNT(*) AS total
+        FROM browser_like_events WHERE account_username = ? AND ${generalPostPredicate}`).bind(account).first<{ total: number }>(),
     ]);
     return Response.json({
       accountUsername: account, page, pageSize: 20, total: counts?.total ?? 0, applied: counts?.applied ?? 0,
+      verifiedTotal: verifiedCounts?.total ?? 0,
+      handledTotal: Math.max(0, (verifiedCounts?.total ?? 0) - (counts?.total ?? 0)),
       manualOnline: await manualAgentOnline(),
       events: (rows.results ?? []).map(row => ({ eventId: row.event_id, shortcode: row.shortcode,
         status: row.status, likedAt: row.liked_at, observedAt: row.observed_at,

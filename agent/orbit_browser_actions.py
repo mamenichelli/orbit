@@ -26,6 +26,10 @@ POST_PATH = re.compile(r"^/p/([A-Za-z0-9_-]+)/?$")
 USERNAME = re.compile(r"^[a-z0-9._]{1,30}$")
 
 
+class AccountVerificationUnavailable(RuntimeError):
+    """Instagram did not answer the identity check; never treat it as a match."""
+
+
 def normalize_usernames(text: str) -> list[str]:
     return sorted({value for part in re.split(r"[\s,;]+", text) if
                    (value := part.strip().lstrip("@").lower()) and USERNAME.fullmatch(value)})
@@ -176,11 +180,13 @@ def assert_account(context, expected_username: str) -> None:
         timeout=20_000,
     )
     if not response.ok:
-        raise RuntimeError("Impossibile verificare il profilo Instagram attivo: nessuna azione eseguita")
+        raise AccountVerificationUnavailable(
+            "Impossibile verificare il profilo Instagram attivo: nessuna azione eseguita")
     try:
         payload = response.json()
     except ValueError as exc:
-        raise RuntimeError("Identità Instagram non verificabile: nessuna azione eseguita") from exc
+        raise AccountVerificationUnavailable(
+            "Identità Instagram non verificabile: nessuna azione eseguita") from exc
     actual = authenticated_username(payload)
     if actual != expected_username.lower():
         raise RuntimeError(

@@ -97,6 +97,7 @@ type AuditItem = { id: number; event_type: string; payload: string; created_at: 
 
 type LikeHistory = {
   accountUsername: string; page: number; pageSize: number; total: number; applied: number; manualOnline: boolean;
+  verifiedTotal: number; handledTotal: number;
   events: { eventId: string; shortcode: string; status: "applied" | "already_liked" | "legacy" | "discovered";
     likedAt: string | null; observedAt: string; groups: { title: string; threadPath: string }[]; metadata?: { authorUsername?: string; publishedAt?: string | null } }[];
 };
@@ -954,7 +955,7 @@ export default function Home() {
         {(active === "Oggi" || active === "Attività") && (
           <article className="panel like-history-panel">
             <div className="panel-head"><div><p className="eyebrow">SOLO GENERALE · @{likeHistory?.accountUsername ?? "ma.menichelli"}</p><h2>Post da Generale</h2></div><span className="daily-count">{formatNumber(likeHistory?.total ?? 0)}</span></div>
-            <p className="like-history-note">Un clic su «Mi piace» agisce solo su quel post, senza uscire da Orbit. {likeHistory?.manualOnline ? "Collegamento Instagram attivo." : "Collegamento Instagram offline: accendi il PC e avvia l’agente manuale."}</p>
+            <p className="like-history-note">Un clic su «Mi piace» agisce solo su quel post, senza uscire da Orbit. {likeHistory?.manualOnline ? "Collegamento Instagram attivo." : "Collegamento Instagram offline: accendi il PC e avvia l’agente manuale."} {likeHistory ? `${likeHistory.verifiedTotal} post verificati in Generale · ${likeHistory.total} da valutare · ${likeHistory.handledTotal} già gestiti` : ""}</p>
             {manualMessage && <p className="like-history-note" role="status">{manualMessage}</p>}
             {collectionMessage && <p className="like-history-note" role="status">{collectionMessage}</p>}
             {likeHistoryError && <p role="status" className="sync-error">{likeHistoryError}. I dati già caricati restano visibili.</p>}

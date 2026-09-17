@@ -4,9 +4,16 @@ from unittest.mock import patch
 from contextlib import nullcontext
 from pathlib import Path
 from itertools import count
-from orbit_manual_instagram import valid_job, assert_general, select_general, watch_collected_posts
+from orbit_manual_instagram import valid_job, assert_account_ui, assert_general, select_general, watch_collected_posts
 
 class ManualIntentTests(unittest.TestCase):
+    def test_visible_account_header_must_match_configured_account(self):
+        class Page:
+            def __init__(self,value):self.value=value
+            def wait_for_function(self,*args,**kwargs):pass
+            def evaluate(self,*args):return self.value
+        assert_account_ui(Page(True),'ma.menichelli')
+        with self.assertRaises(RuntimeError):assert_account_ui(Page(False),'ma.menichelli')
     def test_roster_excludes_buttons_above_general_and_recovers_non_chat_navigation(self):
         source=Path(__file__).with_name('orbit_manual_instagram.py').read_text(encoding='utf-8')
         self.assertEqual(source.count('r.y>=pane.bottom'),2)
@@ -32,7 +39,18 @@ class ManualIntentTests(unittest.TestCase):
             with self.assertRaises(StopIteration): watch_collected_posts(Path('.env.agent'), True)
         self.assertEqual(scan.call_count,2)
         self.assertTrue(scan.call_args.kwargs['publish_approved'])
-        self.assertEqual(scan.call_args.kwargs['history_pages'],1)
+        self.assertEqual(scan.call_args_list[0].kwargs['history_pages'],40)
+        self.assertEqual(scan.call_args_list[1].kwargs['history_pages'],40)
+    def test_refresh_scan_is_fast_but_idle_scan_reads_full_history(self):
+        source=Path(__file__).with_name('orbit_manual_instagram.py').read_text(encoding='utf-8')
+        self.assertIn("history_pages=40 if deep_scan else 1",source)
+        self.assertIn("max(completed,attempted)",source)
+        self.assertIn("Raccolta rinviata per interfaccia Instagram non pronta",source)
+    def test_manual_worker_recovers_only_transient_identity_and_browser_failures(self):
+        source=Path(__file__).with_name('orbit_manual_instagram.py').read_text(encoding='utf-8')
+        self.assertIn('except AccountVerificationUnavailable:',source)
+        self.assertIn('except BrowserError:',source)
+        self.assertNotIn('except RuntimeError:\n            logging.warning("Identità Instagram',source)
     def test_each_post_is_persisted_before_later_navigation_can_time_out(self):
         source=Path(__file__).with_name('orbit_manual_instagram.py').read_text(encoding='utf-8')
         self.assertLess(source.index('if on_found: on_found(pid, found[pid])'),source.index('if not opened:'))

@@ -16,23 +16,22 @@ import time
 import requests
 from urllib.parse import urlparse
 
-from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
+from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout, Error as BrowserError
 from orbit_instagram_agent import load_config, required
-from orbit_browser_actions import (assert_account, browser_context, checked_navigation,
+from orbit_browser_actions import (AccountVerificationUnavailable, assert_account, browser_context, checked_navigation,
     conversation_title, gateway_post, like_post, mark_thread_rows, post_id,
     load_state, save_state, record_like_event, sync_like_events)
 
 
-def run_worker(config_path):
-    config = load_config(config_path)
-    with sync_playwright() as p:
-        context, browser = browser_context(p, config_path, config)
+def run_worker_session(playwright, config_path, config):
+        context, browser = browser_context(playwright, config_path, config)
         try:
             page = context.new_page()
+            identity_page = context.new_page()
+            checked_collection_navigation(identity_page, "https://www.instagram.com/direct/inbox/")
+            assert_account_ui(identity_page, required(config, "ORBIT_INSTAGRAM_USERNAME"))
             logging.info("Avvio collegamento manuale")
             while True:
-                # Do not advertise online unless the account identity has just been checked.
-                assert_account(context, required(config, "ORBIT_INSTAGRAM_USERNAME"))
                 try:
                     result = gateway_post(config, "/api/agent/instagram-manual", {
                         "action": "claim", "accountUsername": required(config, "ORBIT_INSTAGRAM_USERNAME")})
@@ -47,20 +46,37 @@ def run_worker(config_path):
                 status, message = "failed", "Richiesta scaduta: nessuna azione eseguita"
                 if valid_job(job):
                     try:
-                        assert_account(context, required(config, "ORBIT_INSTAGRAM_USERNAME"))
+                        assert_account_ui(identity_page, required(config, "ORBIT_INSTAGRAM_USERNAME"))
                         added = like_post(page, job["shortcode"])
                         status = "applied" if added else "already_liked"
                         message = "Mi piace verificato" if added else "Mi piace già presente"
                     except Exception:
                         message = "Instagram non ha confermato il like: controlla il post prima di riprovare"
                 # Never replay a command after an interrupted execution or acknowledgment.
-                gateway_post(config, "/api/agent/instagram-manual", {
-                    "action": "complete", "accountUsername": required(config, "ORBIT_INSTAGRAM_USERNAME"),
-                    "id": job["id"], "status": status, "message": message})
+                try:
+                    gateway_post(config, "/api/agent/instagram-manual", {
+                        "action": "complete", "accountUsername": required(config, "ORBIT_INSTAGRAM_USERNAME"),
+                        "id": job["id"], "status": status, "message": message})
+                except requests.RequestException:
+                    # The server keeps the job executing until it expires; never replay it.
+                    logging.warning("Conferma Orbit rinviata: il comando non sarà ripetuto")
                 print(message, flush=True)
         finally:
             context.close()
             if browser: browser.close()
+
+
+def run_worker(config_path):
+    config = load_config(config_path)
+    while True:
+        try:
+            with sync_playwright() as playwright:
+                run_worker_session(playwright, config_path, config)
+        except AccountVerificationUnavailable:
+            logging.warning("Identità Instagram temporaneamente non verificabile: collegamento sospeso")
+        except BrowserError:
+            logging.exception("Browser Instagram interrotto: riavvio sicuro del collegamento manuale")
+        time.sleep(60)
 
 
 def valid_job(job):
@@ -111,6 +127,27 @@ def general_selected(page):
 def assert_general(page):
     if not general_selected(page):
         raise RuntimeError("Scheda Generale non confermata: raccolta fermata, nessun post di Principale importato")
+
+
+def assert_account_ui(page, expected_username):
+    """Verify the immutable headless session from Instagram's visible account switcher."""
+    # Instagram changes the account header between a button, a heading and a
+    # plain div. Match the configured username itself in the fixed inbox header
+    # instead of depending on one particular tag/role.
+    script = """expected => Array.from(document.querySelectorAll('button,[role="button"],h1,h2,div,span')).some(node=>{
+      const rect=node.getBoundingClientRect();
+      const text=(node.innerText||node.textContent||'').trim();
+      return rect.width>0&&rect.height>0&&rect.x<500&&rect.y<120&&rect.bottom<=150
+        && text.toLowerCase()===expected.toLowerCase();
+    })"""
+    try:
+        page.wait_for_function(script, expected_username, timeout=45000)
+    except BrowserTimeout as exc:
+        raise RuntimeError(
+            f"Profilo attivo non verificabile, atteso @{expected_username}: nessuna azione eseguita") from exc
+    if not page.evaluate(script, expected_username):
+        raise RuntimeError(
+            f"Profilo attivo non verificabile, atteso @{expected_username}: nessuna azione eseguita")
 
 
 def checked_collection_navigation(page, url):
@@ -267,9 +304,9 @@ def collect(config_path, publish_approved=False, history_pages=40, on_group=None
     with sync_playwright() as p:
         context, browser = browser_context(p, config_path, config)
         try:
-            assert_account(context, required(config, "ORBIT_INSTAGRAM_USERNAME"))
             page = context.new_page()
             checked_collection_navigation(page, "https://www.instagram.com/direct/inbox/")
+            assert_account_ui(page, required(config, "ORBIT_INSTAGRAM_USERNAME"))
             select_general(page)
             deadline = time.monotonic() + 30
             while not mark_general_rows(page) and time.monotonic() < deadline:
@@ -412,32 +449,40 @@ def watch_collected_posts(config_path, publish_approved=False, interval=60):
                 stop.wait(3)
         threading.Thread(target=heartbeat,daemon=True).start()
         completed=0
+        attempted=0
         next_scan=0
         try:
             while True:
-                if time.monotonic()<next_scan and latest.get('requested_at',0)<=completed:
+                if time.monotonic()<next_scan and latest.get('requested_at',0)<=max(completed,attempted):
                     time.sleep(1);continue
                 version=0
                 try:
                     scan=control('started');version=scan['started_request_at']
+                    attempted=max(attempted,version)
                     logging.info('Avvio nuovo ciclo Generale in sola lettura')
                     started=time.monotonic()
-                    result=collect(config_path,publish_approved=True,history_pages=1,
+                    deep_scan=latest.get('requested_at',0)<=completed
+                    result=collect(config_path,publish_approved=True,history_pages=40 if deep_scan else 1,
                         on_group=lambda: latest.get('requested_at',0)<=version or time.monotonic()-started<30)
                     if result=='interrupted':continue
                     control('finished',version=version);completed=max(completed,version)
                     print('Ciclo Generale completato: refresh confermato',flush=True)
                     next_scan=time.monotonic()+max(60,interval)
-                except (BrowserTimeout, requests.RequestException) as exc:
+                except (AccountVerificationUnavailable, BrowserTimeout, requests.RequestException) as exc:
                     logging.exception('Raccolta rinviata: %s; nessuna azione Instagram eseguita',type(exc).__name__)
                     try:control('failed',version=version)
                     except requests.RequestException:pass
                     next_scan=time.monotonic()+60
                     time.sleep(10)
-                except RuntimeError:
+                except RuntimeError as exc:
+                    message = str(exc)
                     try:control('failed',version=version)
                     except requests.RequestException:pass
-                    raise
+                    if message.startswith(('Profilo attivo @', 'Sessione Instagram scaduta', 'Raccolta Generale già attiva')):
+                        raise
+                    logging.exception('Raccolta rinviata per interfaccia Instagram non pronta; nessuna azione eseguita')
+                    next_scan=time.monotonic()+60
+                    time.sleep(10)
         finally:stop.set()
 
 

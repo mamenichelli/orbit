@@ -54,3 +54,13 @@ test('Collector re-import preserves a user Skip', () => {
   assert.equal(db.prepare('SELECT status FROM browser_like_events').get().status,'skipped');
   db.close();
 });
+
+test('General feed reports verified, pending, and already handled totals separately', () => {
+  const source = readFileSync(new URL('../app/api/agent/instagram-likes/route.ts', import.meta.url), 'utf8');
+  const page = readFileSync(new URL('../app/page.tsx', import.meta.url), 'utf8');
+  assert.match(source, /verifiedTotal: verifiedCounts\?\.total \?\? 0/);
+  assert.match(source, /handledTotal: Math\.max\(0,/);
+  assert.match(page, /post verificati in Generale/);
+  assert.match(page, /da valutare/);
+  assert.match(page, /già gestiti/);
+});
