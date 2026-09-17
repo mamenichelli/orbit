@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
+import InstagramSessionControl from "./InstagramSessionControl";
 import "./globals.css";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -30,5 +31,5 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="it"><body>{children}</body></html>;
+  return <html lang="it"><body>{children}<InstagramSessionControl /></body></html>;
 }
