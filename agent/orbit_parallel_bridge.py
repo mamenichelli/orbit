@@ -1,13 +1,12 @@
-"""Run Orbit's local Instagram collector against both Orbit dashboards.
+"""Run Orbit's local Instagram collector against legacy Orbit and the agent relay.
 
-The existing ChatGPT Site remains primary. Orbit Parallel on AppDeploy is mirrored
-as a secondary endpoint without changing the Instagram session or agent token.
+The existing ChatGPT Site remains primary. Orbit Agent Relay is the secondary
+machine endpoint used by Orbit Parallel without changing the Instagram session or agent token.
 """
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
-import time
 
 import requests
 
@@ -16,13 +15,17 @@ import orbit_instagram_directs as directs
 import orbit_manual_instagram as manual
 from orbit_instagram_agent import gateway_headers, load_config, required
 
-DEFAULT_SECONDARY_DASHBOARD = "https://orbit-parallel-thwhpj.v2.appdeploy.ai"
+DEFAULT_SECONDARY_DASHBOARD = "https://orbit-agent-relay-tekjx2.v2.appdeploy.ai"
 _JOB_ORIGINS: dict[str, str] = {}
 
 
 def dashboard_urls(config: dict[str, str]) -> list[str]:
     primary = required(config, "ORBIT_DASHBOARD_URL").rstrip("/")
     secondary = config.get("ORBIT_SECONDARY_DASHBOARD_URL", "").strip().rstrip("/") or DEFAULT_SECONDARY_DASHBOARD
+    # Old configs may still contain the protected Orbit Parallel URL. Never call
+    # it from the machine agent: AppDeploy's user-auth gateway rejects that path.
+    if secondary == "https://orbit-parallel-thwhpj.v2.appdeploy.ai":
+        secondary = DEFAULT_SECONDARY_DASHBOARD
     result: list[str] = []
     for value in (primary, secondary):
         if value and value not in result:
@@ -33,9 +36,6 @@ def dashboard_urls(config: dict[str, str]) -> list[str]:
 def _headers(config: dict[str, str], base_url: str) -> dict[str, str]:
     if base_url.endswith(".chatgpt.site"):
         return dict(gateway_headers(config))
-    # Keep AppDeploy agent calls free of auth-like custom headers: its edge may
-    # intercept them before the public Orbit route is reached. The agent token is
-    # carried inside the HTTPS JSON payload and verified by Orbit's backend.
     return {}
 
 
@@ -109,8 +109,6 @@ def dual_gateway_post(config: dict[str, str], path: str, payload: dict) -> dict:
             try:
                 responses.append(_post_one(config, base_url, path, payload))
             except (requests.RequestException, ValueError) as exc:
-                # Legacy Sites never published instagram-browser-auth. AppDeploy
-                # can still service reauth, so one successful dashboard is enough.
                 errors.append(exc)
         if not responses and errors:
             raise errors[0]
@@ -169,7 +167,7 @@ def install_bridge() -> None:
 def self_test(config: dict[str, str]) -> None:
     username = required(config, "ORBIT_INSTAGRAM_USERNAME")
     failures = 0
-    print("Test collegamento Orbit legacy + Orbit Parallel", flush=True)
+    print("Test collegamento Orbit legacy + Orbit Agent Relay", flush=True)
     for base_url in dashboard_urls(config):
         try:
             collection = _post_one(config, base_url, "/api/agent/instagram-collection", {
@@ -178,8 +176,6 @@ def self_test(config: dict[str, str]) -> None:
             })
             if not isinstance(collection, dict):
                 raise RuntimeError("Risposta raccolta Orbit non valida")
-            # Browser reauth exists on AppDeploy. The currently published legacy
-            # Site returns 404 for this route, so do not treat that as a failure.
             if not base_url.endswith(".chatgpt.site"):
                 auth = _post_one(config, base_url, "/api/agent/instagram-browser-auth", {
                     "action": "poll",
@@ -193,19 +189,19 @@ def self_test(config: dict[str, str]) -> None:
             detail = str(exc).replace("\n", " ").strip()
             print(f"ERRORE {base_url}: {type(exc).__name__}: {detail}", flush=True)
     if failures:
-        raise RuntimeError(f"Test fallito su {failures} dashboard")
-    print("TEST COMPLETATO: entrambe le dashboard raggiungibili e autorizzate.", flush=True)
+        raise RuntimeError(f"Test fallito su {failures} endpoint")
+    print("TEST COMPLETATO: legacy e relay raggiungibili e autorizzati.", flush=True)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Orbit dual dashboard bridge")
+    parser = argparse.ArgumentParser(description="Orbit legacy + agent relay bridge")
     parser.add_argument("command", choices=["watch", "worker", "test"])
     parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parent.parent / ".env.agent")
     parser.add_argument("--interval", type=int, default=60)
     args = parser.parse_args()
     config_path = args.config.resolve()
     config = load_config(config_path)
-    print("Orbit dashboard: " + " + ".join(dashboard_urls(config)), flush=True)
+    print("Orbit endpoint: " + " + ".join(dashboard_urls(config)), flush=True)
     if args.command == "test":
         self_test(config)
         return
