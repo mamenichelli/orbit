@@ -31,25 +31,22 @@ def dashboard_urls(config: dict[str, str]) -> list[str]:
 
 
 def _headers(config: dict[str, str], base_url: str) -> dict[str, str]:
-    headers = dict(gateway_headers(config))
     if base_url.endswith(".chatgpt.site"):
-        return headers
-    # AppDeploy uses Authorization for its own user auth layer. Agent traffic uses
-    # a dedicated header so the platform does not reject the request before it
-    # reaches Orbit's backend.
-    token = required(config, "ORBIT_AGENT_TOKEN")
-    headers.pop("Authorization", None)
-    headers.pop("authorization", None)
-    headers.pop("OAI-Sites-Authorization", None)
-    headers["X-Orbit-Agent-Token"] = token
-    return headers
+        return dict(gateway_headers(config))
+    # Keep AppDeploy agent calls free of auth-like custom headers: its edge may
+    # intercept them before the public Orbit route is reached. The agent token is
+    # carried inside the HTTPS JSON payload and verified by Orbit's backend.
+    return {}
 
 
 def _post_one(config: dict[str, str], base_url: str, path: str, payload: dict) -> dict:
+    body = dict(payload)
+    if not base_url.endswith(".chatgpt.site"):
+        body["agentToken"] = required(config, "ORBIT_AGENT_TOKEN")
     response = requests.post(
         base_url.rstrip("/") + path,
         headers=_headers(config, base_url),
-        json=payload,
+        json=body,
         timeout=60,
     )
     response.raise_for_status()
