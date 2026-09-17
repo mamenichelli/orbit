@@ -159,15 +159,44 @@ def install_bridge() -> None:
     directs.gateway_post = dual_gateway_post
 
 
+def self_test(config: dict[str, str]) -> None:
+    username = required(config, "ORBIT_INSTAGRAM_USERNAME")
+    failures = 0
+    print("Test collegamento Orbit legacy + Orbit Parallel", flush=True)
+    for base_url in dashboard_urls(config):
+        try:
+            auth = _post_one(config, base_url, "/api/agent/instagram-browser-auth", {
+                "action": "poll",
+                "accountUsername": username,
+            })
+            collection = _post_one(config, base_url, "/api/agent/instagram-collection", {
+                "action": "poll",
+                "accountUsername": username,
+            })
+            if not isinstance(auth, dict) or not isinstance(collection, dict):
+                raise RuntimeError("Risposta Orbit non valida")
+            print(f"OK   {base_url}", flush=True)
+        except Exception as exc:
+            failures += 1
+            detail = str(exc).replace("\n", " ").strip()
+            print(f"ERRORE {base_url}: {type(exc).__name__}: {detail}", flush=True)
+    if failures:
+        raise RuntimeError(f"Test fallito su {failures} dashboard")
+    print("TEST COMPLETATO: entrambe le dashboard raggiungibili e autorizzate.", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Orbit dual dashboard bridge")
-    parser.add_argument("command", choices=["watch", "worker"])
+    parser.add_argument("command", choices=["watch", "worker", "test"])
     parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parent.parent / ".env.agent")
     parser.add_argument("--interval", type=int, default=60)
     args = parser.parse_args()
     config_path = args.config.resolve()
     config = load_config(config_path)
     print("Orbit dashboard: " + " + ".join(dashboard_urls(config)), flush=True)
+    if args.command == "test":
+        self_test(config)
+        return
     install_bridge()
     if args.command == "worker":
         directs.worker(config_path)
