@@ -32,8 +32,16 @@ def dashboard_urls(config: dict[str, str]) -> list[str]:
 
 def _headers(config: dict[str, str], base_url: str) -> dict[str, str]:
     headers = dict(gateway_headers(config))
-    if not base_url.endswith(".chatgpt.site"):
-        headers.pop("OAI-Sites-Authorization", None)
+    if base_url.endswith(".chatgpt.site"):
+        return headers
+    # AppDeploy uses Authorization for its own user auth layer. Agent traffic uses
+    # a dedicated header so the platform does not reject the request before it
+    # reaches Orbit's backend.
+    token = required(config, "ORBIT_AGENT_TOKEN")
+    headers.pop("Authorization", None)
+    headers.pop("authorization", None)
+    headers.pop("OAI-Sites-Authorization", None)
+    headers["X-Orbit-Agent-Token"] = token
     return headers
 
 
@@ -104,6 +112,8 @@ def dual_gateway_post(config: dict[str, str], path: str, payload: dict) -> dict:
             try:
                 responses.append(_post_one(config, base_url, path, payload))
             except (requests.RequestException, ValueError) as exc:
+                # Legacy Sites never published instagram-browser-auth. AppDeploy
+                # can still service reauth, so one successful dashboard is enough.
                 errors.append(exc)
         if not responses and errors:
             raise errors[0]
@@ -165,16 +175,21 @@ def self_test(config: dict[str, str]) -> None:
     print("Test collegamento Orbit legacy + Orbit Parallel", flush=True)
     for base_url in dashboard_urls(config):
         try:
-            auth = _post_one(config, base_url, "/api/agent/instagram-browser-auth", {
-                "action": "poll",
-                "accountUsername": username,
-            })
             collection = _post_one(config, base_url, "/api/agent/instagram-collection", {
                 "action": "poll",
                 "accountUsername": username,
             })
-            if not isinstance(auth, dict) or not isinstance(collection, dict):
-                raise RuntimeError("Risposta Orbit non valida")
+            if not isinstance(collection, dict):
+                raise RuntimeError("Risposta raccolta Orbit non valida")
+            # Browser reauth exists on AppDeploy. The currently published legacy
+            # Site returns 404 for this route, so do not treat that as a failure.
+            if not base_url.endswith(".chatgpt.site"):
+                auth = _post_one(config, base_url, "/api/agent/instagram-browser-auth", {
+                    "action": "poll",
+                    "accountUsername": username,
+                })
+                if not isinstance(auth, dict):
+                    raise RuntimeError("Risposta rinnovo Orbit non valida")
             print(f"OK   {base_url}", flush=True)
         except Exception as exc:
             failures += 1
