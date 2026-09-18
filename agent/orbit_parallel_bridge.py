@@ -15,16 +15,21 @@ import orbit_instagram_directs as directs
 import orbit_manual_instagram as manual
 from orbit_instagram_agent import gateway_headers, load_config, required
 
-DEFAULT_SECONDARY_DASHBOARD = "https://orbit-agent-relay-tekjx2.v2.appdeploy.ai"
+DEFAULT_SECONDARY_DASHBOARD = "https://orbit-agent-relay.onrender.com"
+OLD_SECONDARY_DASHBOARDS = {
+    "https://orbit-parallel-thwhpj.v2.appdeploy.ai",
+    "https://orbit-agent-relay-tekjx2.v2.appdeploy.ai",
+}
 _JOB_ORIGINS: dict[str, str] = {}
+_RELAY_BOOTSTRAPPED_NOW = False
 
 
 def dashboard_urls(config: dict[str, str]) -> list[str]:
     primary = required(config, "ORBIT_DASHBOARD_URL").rstrip("/")
     secondary = config.get("ORBIT_SECONDARY_DASHBOARD_URL", "").strip().rstrip("/") or DEFAULT_SECONDARY_DASHBOARD
-    # Old configs may still contain the protected Orbit Parallel URL. Never call
-    # it from the machine agent: AppDeploy's user-auth gateway rejects that path.
-    if secondary == "https://orbit-parallel-thwhpj.v2.appdeploy.ai":
+    # Old configs may still contain AppDeploy endpoints that reject machine clients.
+    # Force those stale values onto the Render relay.
+    if secondary in OLD_SECONDARY_DASHBOARDS:
         secondary = DEFAULT_SECONDARY_DASHBOARD
     result: list[str] = []
     for value in (primary, secondary):
@@ -39,16 +44,45 @@ def _headers(config: dict[str, str], base_url: str) -> dict[str, str]:
     return {}
 
 
+def _bootstrap_relay(config: dict[str, str], base_url: str) -> None:
+    global _RELAY_BOOTSTRAPPED_NOW
+    if not base_url.endswith(".onrender.com"):
+        return
+    response = requests.post(
+        base_url.rstrip("/") + "/bootstrap",
+        json={
+            "bootstrapSecret": required(config, "ORBIT_RENDER_BOOTSTRAP_SECRET"),
+            "agentToken": required(config, "ORBIT_AGENT_TOKEN"),
+            "accountUsername": required(config, "ORBIT_INSTAGRAM_USERNAME"),
+        },
+        timeout=60,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if data.get("ok") is not True:
+        raise RuntimeError("Bootstrap relay non confermato")
+    _RELAY_BOOTSTRAPPED_NOW = True
+
+
 def _post_one(config: dict[str, str], base_url: str, path: str, payload: dict) -> dict:
     body = dict(payload)
     if not base_url.endswith(".chatgpt.site"):
         body["agentToken"] = required(config, "ORBIT_AGENT_TOKEN")
+    url = base_url.rstrip("/") + path
     response = requests.post(
-        base_url.rstrip("/") + path,
+        url,
         headers=_headers(config, base_url),
         json=body,
         timeout=60,
     )
+    if response.status_code == 401 and base_url.endswith(".onrender.com"):
+        _bootstrap_relay(config, base_url)
+        response = requests.post(
+            url,
+            headers=_headers(config, base_url),
+            json=body,
+            timeout=60,
+        )
     response.raise_for_status()
     return response.json()
 
@@ -123,7 +157,10 @@ def dual_sync_like_events(config_path: Path, config: dict, state: dict) -> bool:
     all_ok = True
 
     for base_url in urls:
-        pending = [event for event in events if base_url not in event.get("syncedDashboards", [])]
+        if base_url.endswith(".onrender.com") and _RELAY_BOOTSTRAPPED_NOW:
+            pending = list(events)
+        else:
+            pending = [event for event in events if base_url not in event.get("syncedDashboards", [])]
         for offset in range(0, len(pending), 40):
             batch = pending[offset:offset + 40]
             payload = [{key: event[key] for key in
@@ -149,6 +186,9 @@ def dual_sync_like_events(config_path: Path, config: dict, state: dict) -> bool:
                 all_ok = False
                 break
 
+    global _RELAY_BOOTSTRAPPED_NOW
+    if all_ok:
+        _RELAY_BOOTSTRAPPED_NOW = False
     for event in events:
         synced = set(event.get("syncedDashboards", []))
         event["pending"] = any(base_url not in synced for base_url in urls)
@@ -167,9 +207,11 @@ def install_bridge() -> None:
 def self_test(config: dict[str, str]) -> None:
     username = required(config, "ORBIT_INSTAGRAM_USERNAME")
     failures = 0
-    print("Test collegamento Orbit legacy + Orbit Agent Relay", flush=True)
+    print("Test collegamento Orbit legacy + Orbit Agent Relay Render", flush=True)
     for base_url in dashboard_urls(config):
         try:
+            if base_url.endswith(".onrender.com"):
+                _bootstrap_relay(config, base_url)
             collection = _post_one(config, base_url, "/api/agent/instagram-collection", {
                 "action": "poll",
                 "accountUsername": username,
