@@ -422,19 +422,28 @@ def _run_forever(config_path: Path, command: str, interval: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Orbit legacy + Render relay bridge")
-    parser.add_argument("command", choices=["watch", "worker", "test"])
+    parser.add_argument("command", choices=["watch", "worker", "test", "collect"])
     parser.add_argument(
         "--config",
         type=Path,
         default=Path(__file__).resolve().parent.parent / ".env.agent",
     )
     parser.add_argument("--interval", type=int, default=60)
+    parser.add_argument("--history-pages", type=int, default=20)
     args = parser.parse_args()
     config_path = args.config.resolve()
     config = load_config(config_path)
     print("Orbit endpoint: " + " + ".join(dashboard_urls(config)), flush=True)
     if args.command == "test":
         self_test(config)
+        return
+    if args.command == "collect":
+        install_bridge()
+        manual.collect(
+            config_path,
+            publish_approved=True,
+            history_pages=max(1, min(200, args.history_pages)),
+        )
         return
     _run_forever(config_path, args.command, args.interval)
 
