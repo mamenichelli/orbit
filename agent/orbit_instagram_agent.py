@@ -5,6 +5,8 @@ import getpass
 import json
 import random
 import re
+import shutil
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -53,6 +55,25 @@ def required(config: dict[str, str], key: str) -> str:
     return value
 
 
+def set_config_value(path: Path, key: str, value: str) -> None:
+    lines = path.read_text(encoding="utf-8-sig").splitlines() if path.exists() else []
+    replaced = False
+    output: list[str] = []
+    for line in lines:
+        if line.strip().startswith("#") or "=" not in line:
+            output.append(line)
+            continue
+        current_key = line.split("=", 1)[0].strip().lstrip("\ufeff")
+        if current_key == key:
+            output.append(f"{key}={value}")
+            replaced = True
+        else:
+            output.append(line)
+    if not replaced:
+        output.append(f"{key}={value}")
+    path.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
+
+
 def gateway_headers(config: dict[str, str]) -> dict[str, str]:
     headers = {"Authorization": f"Bearer {required(config, 'ORBIT_AGENT_TOKEN')}"}
     sites_bypass = config.get("ORBIT_SIWC_BYPASS_TOKEN", "").strip()
@@ -67,11 +88,13 @@ def session_path(config_path: Path) -> Path:
     return directory / "instagram-session.json"
 
 
-def edge_profile_path(config_path: Path) -> Path:
-    """Dedicated clean login profile; do not reuse the previous One Tap/Primezone profile."""
-    username = required(load_config(config_path), "ORBIT_INSTAGRAM_USERNAME").lower()
-    safe_username = re.sub(r"[^a-z0-9_-]", "-", username)
-    return config_path.parent / ".orbit-agent" / f"edge-profile-{safe_username}-v2"
+def edge_profile_path(config_path: Path, username: str | None = None) -> Path:
+    """Create a one-time Edge profile isolated from Meta/Accounts Center cookies."""
+    selected = (username or required(load_config(config_path), "ORBIT_INSTAGRAM_USERNAME")).lower()
+    safe_username = re.sub(r"[^a-z0-9_-]", "-", selected)
+    directory = config_path.parent / ".orbit-agent"
+    directory.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=f"edge-login-{safe_username}-", dir=directory))
 
 
 def cooldown_path(config_path: Path) -> Path:
@@ -347,8 +370,7 @@ def login_with_browser(username: str, config_path: Path) -> InstagramWebSession:
         except (RuntimeError, requests.RequestException):
             print("Sessione precedente non riutilizzabile; serve la verifica nel browser dedicato.")
 
-    browser_profile = edge_profile_path(config_path)
-    browser_profile.mkdir(parents=True, exist_ok=True)
+    browser_profile = edge_profile_path(config_path, username)
     session_id = ""
     user_agent = ""
     last_mismatch = ""
@@ -364,18 +386,34 @@ def login_with_browser(username: str, config_path: Path) -> InstagramWebSession:
             args=["--start-maximized"],
         )
         page = context.pages[0] if context.pages else context.new_page()
-        page.goto(
-            f"https://www.instagram.com/accounts/login/?next=%2F{username}%2F",
-            wait_until="domcontentloaded",
-        )
+        login_url = f"https://www.instagram.com/accounts/login/?next=%2F{username}%2F"
+        page.goto(login_url, wait_until="domcontentloaded")
         login_name = page.locator('input[name="username"]')
         try:
-            login_name.wait_for(state="visible", timeout=15_000)
-            login_name.fill(username)
+            login_name.wait_for(state="visible", timeout=8_000)
         except Exception:
-            print("Il modulo di accesso non è visibile: scegli 'Accedi a un altro account', non Primezone.")
+            try:
+                switch = page.get_by_text(
+                    re.compile(
+                        r"Accedi a un altro account|Cambia account|Switch accounts|Log into another account",
+                        re.I,
+                    )
+                ).first
+                if switch.count():
+                    switch.click(timeout=5_000)
+                    login_name.wait_for(state="visible", timeout=8_000)
+            except Exception:
+                pass
+        try:
+            if login_name.count():
+                login_name.fill(username)
+        except Exception:
+            pass
         page.bring_to_front()
-        print(f"Nella nuova finestra Edge completa solo l'accesso a @{username}; non premere 'Continua come Primezone'.")
+        print(
+            f"Account richiesto: @{username}. Questa finestra Edge è isolata da Primezone e "
+            "dagli altri account Meta. Completa il login solo dell'account scelto."
+        )
         deadline = time.time() + 600
         while time.time() < deadline:
             cookies = context.cookies(["https://www.instagram.com"])
@@ -399,10 +437,22 @@ def login_with_browser(username: str, config_path: Path) -> InstagramWebSession:
                     user_agent = page.evaluate("navigator.userAgent")
                     break
                 if actual and actual != last_mismatch:
-                    print(f"Profilo attivo @{actual}; seleziona @{username} nel browser. Nessuna sessione errata sarà salvata.")
+                    print(
+                        f"Profilo attivo @{actual}, ma Orbit attende @{username}. "
+                        "La sessione errata non viene salvata: riapro il login pulito."
+                    )
                     last_mismatch = actual
+                    try:
+                        context.clear_cookies()
+                        page.goto(login_url, wait_until="domcontentloaded")
+                        retry_name = page.locator('input[name="username"]')
+                        if retry_name.count():
+                            retry_name.fill(username)
+                    except Exception:
+                        pass
             page.wait_for_timeout(1000)
         context.close()
+    shutil.rmtree(browser_profile, ignore_errors=True)
     if not session_id:
         raise RuntimeError("Accesso browser non completato entro 10 minuti")
 
