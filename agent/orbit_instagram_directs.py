@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 import requests
 
 import orbit_manual_instagram as manual
-from orbit_instagram_agent import load_config, required, login_with_browser
+from orbit_instagram_agent import load_config, required, login_with_browser, set_config_value
 from orbit_browser_actions import gateway_post
 
 CONTENT_PATH = re.compile(r"^/(?:p|reel)/([A-Za-z0-9_-]+)/?$")
@@ -122,13 +122,180 @@ def _auth_control(config, action, **fields):
 
 
 def _restart_manual_worker() -> None:
+    """Restart only the worker child; the PowerShell wrapper brings it back."""
+    command = (
+        "$self=$PID; "
+        "Get-CimInstance Win32_Process | "
+        "Where-Object {$_.Name -match '^python(w)?\\.exe
+
+def watch(config_path: Path, interval: int) -> None:
+    install_compatibility_overrides()
+    with manual.collector_lock(config_path):
+        config = load_config(config_path)
+        collection = {"requested_at": 0, "completed_request_at": 0}
+        auth = {"requested_at": 0, "completed_request_at": 0}
+        stop = threading.Event()
+
+        def heartbeat():
+            while not stop.is_set():
+                try:
+                    collection.update(_collection_control(config, "poll"))
+                except requests.RequestException:
+                    pass
+                try:
+                    auth.update(_auth_control(config, "poll"))
+                except requests.RequestException:
+                    pass
+                stop.wait(3)
+
+        threading.Thread(target=heartbeat, daemon=True).start()
+        completed = attempted = auth_attempted = 0
+        next_scan = 0.0
+        try:
+            while True:
+                requested_auth = int(auth.get("requested_at", 0) or 0)
+                completed_auth = int(auth.get("completed_request_at", 0) or 0)
+                if requested_auth > max(completed_auth, auth_attempted):
+                    auth_attempted = requested_auth
+                    version = requested_auth
+                    try:
+                        selected_username = str(
+                            auth.get("requested_username")
+                            or required(config, "ORBIT_INSTAGRAM_USERNAME")
+                        ).strip().lstrip("@").lower()
+                        if not re.fullmatch(r"[A-Za-z0-9._]{1,30}", selected_username):
+                            raise RuntimeError("Username Instagram richiesto non valido")
+                        started = _auth_control(config, "started")
+                        version = int(started.get("started_request_at", version) or version)
+                        selected_username = str(
+                            started.get("requested_username") or selected_username
+                        ).strip().lstrip("@").lower()
+                        print(
+                            f"Rinnovo richiesto da Orbit per @{selected_username}: apro Edge pulito.",
+                            flush=True,
+                        )
+                        login_with_browser(selected_username, config_path)
+                        previous_username = required(config, "ORBIT_INSTAGRAM_USERNAME").lower()
+                        if selected_username != previous_username:
+                            set_config_value(
+                                config_path,
+                                "ORBIT_INSTAGRAM_USERNAME",
+                                selected_username,
+                            )
+                            config["ORBIT_INSTAGRAM_USERNAME"] = selected_username
+                            print(
+                                f"Account operativo Orbit cambiato: @{previous_username} -> @{selected_username}.",
+                                flush=True,
+                            )
+                        _auth_control(
+                            config,
+                            "finished",
+                            version=version,
+                            accountUsername=selected_username,
+                        )
+                        auth["completed_request_at"] = version
+                        auth["requested_username"] = ""
+                        _restart_manual_worker()
+                        next_scan = 0
+                        print(
+                            f"Sessione Instagram verificata per @{selected_username}; Generali di nuovo attivo.",
+                            flush=True,
+                        )
+                    except Exception as exc:
+                        message = re.sub(r"\s+", " ", str(exc)).strip()[:300] or type(exc).__name__
+                        try:
+                            _auth_control(config, "failed", version=version, message=message)
+                        except requests.RequestException:
+                            pass
+                    continue
+
+                if time.monotonic() < next_scan and int(collection.get("requested_at", 0) or 0) <= max(completed, attempted):
+                    time.sleep(1)
+                    continue
+
+                version = 0
+                try:
+                    scan = _collection_control(config, "started")
+                    version = int(scan.get("started_request_at", 0) or 0)
+                    attempted = max(attempted, version)
+                    started_at = time.monotonic()
+                    # A huge bound removes the old 1/40-history-page limit; collect()
+                    # still stops naturally when the chat cannot scroll any farther.
+                    result = manual.collect(
+                        config_path,
+                        publish_approved=True,
+                        history_pages=1_000_000,
+                        on_group=lambda: int(collection.get("requested_at", 0) or 0) <= version
+                        or time.monotonic() - started_at < 30,
+                    )
+                    if result == "interrupted":
+                        continue
+                    _collection_control(config, "finished", version=version)
+                    completed = max(completed, version)
+                    next_scan = time.monotonic() + max(60, interval)
+                except requests.RequestException:
+                    next_scan = time.monotonic() + 30
+                except RuntimeError as exc:
+                    message = str(exc)
+                    try:
+                        _collection_control(config, "failed", version=version)
+                    except requests.RequestException:
+                        pass
+                    if message.startswith(("Sessione Instagram scaduta", "Profilo attivo @")):
+                        try:
+                            _auth_control(config, "required", message=message)
+                        except requests.RequestException:
+                            pass
+                        print("Sessione Instagram scaduta: premi 'Rigenera accesso Instagram' in Orbit.", flush=True)
+                        next_scan = time.monotonic() + 60
+                    else:
+                        next_scan = time.monotonic() + 30
+                except Exception:
+                    try:
+                        _collection_control(config, "failed", version=version)
+                    except requests.RequestException:
+                        pass
+                    next_scan = time.monotonic() + 30
+        finally:
+            stop.set()
+
+
+def worker(config_path: Path) -> None:
+    install_compatibility_overrides()
+    while True:
+        try:
+            manual.run_worker(config_path)
+        except Exception:
+            # Keep the task alive while the collector waits for a dashboard re-auth.
+            time.sleep(30)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Orbit Directs: Generali + rinnovo sessione")
+    parser.add_argument("command", choices=["watch", "worker"])
+    parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parent.parent / ".env.agent")
+    parser.add_argument("--interval", type=int, default=60)
+    args = parser.parse_args()
+    if args.command == "worker":
+        worker(args.config.resolve())
+    else:
+        watch(args.config.resolve(), max(60, args.interval))
+
+
+if __name__ == "__main__":
+    main()
+ -and $_.CommandLine "
+        "-like '*orbit_parallel_bridge.py* worker *'} | "
+        "ForEach-Object {Invoke-CimMethod -InputObject $_ -MethodName Terminate "
+        "-ErrorAction SilentlyContinue | Out-Null}"
+    )
     try:
         subprocess.run(
-            ["schtasks", "/Run", "/TN", "Orbit Instagram Manual Likes"],
+            ["powershell.exe", "-NoProfile", "-Command", command],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=15,
+            timeout=20,
         )
     except (OSError, subprocess.SubprocessError):
         pass
