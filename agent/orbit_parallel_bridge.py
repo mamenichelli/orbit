@@ -152,6 +152,7 @@ def dual_gateway_post(config: dict[str, str], path: str, payload: dict) -> dict:
 
 
 def dual_sync_like_events(config_path: Path, config: dict, state: dict) -> bool:
+    global _RELAY_BOOTSTRAPPED_NOW
     urls = dashboard_urls(config)
     events = list(state.get("likeEvents", {}).values())
     all_ok = True
@@ -186,7 +187,6 @@ def dual_sync_like_events(config_path: Path, config: dict, state: dict) -> bool:
                 all_ok = False
                 break
 
-    global _RELAY_BOOTSTRAPPED_NOW
     if all_ok:
         _RELAY_BOOTSTRAPPED_NOW = False
     for event in events:
