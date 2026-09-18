@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import os
@@ -11,9 +12,10 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
-app = FastAPI(title='Orbit Agent Relay', version='1.1.0')
+app = FastAPI(title='Orbit Agent Relay', version='1.2.0')
 
-AGENT_TOKEN = os.environ.get('ORBIT_AGENT_TOKEN', '')
+ENV_AGENT_TOKEN = os.environ.get('ORBIT_AGENT_TOKEN', '')
+BOOTSTRAP_SECRET = os.environ.get('ORBIT_RENDER_BOOTSTRAP_SECRET', '')
 ACCOUNT = os.environ.get('ORBIT_INSTAGRAM_USERNAME', 'ma.menichelli')
 DB_PATH = Path(os.environ.get('ORBIT_RELAY_DB', '/tmp/orbit-relay.db'))
 LOCK = threading.RLock()
@@ -25,13 +27,19 @@ def db() -> sqlite3.Connection:
     return connection
 
 
+def digest(value: str) -> str:
+    return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+
 def init_db() -> None:
-    if not AGENT_TOKEN:
-        raise RuntimeError('ORBIT_AGENT_TOKEN missing')
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with LOCK, db() as conn:
         conn.executescript(
             """
+            CREATE TABLE IF NOT EXISTS orbit_config (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS orbit_state (
               name TEXT PRIMARY KEY,
               requested_at INTEGER NOT NULL DEFAULT 0,
@@ -68,9 +76,22 @@ def startup() -> None:
     init_db()
 
 
+def stored_token_hash() -> str:
+    if ENV_AGENT_TOKEN:
+        return digest(ENV_AGENT_TOKEN)
+    with LOCK, db() as conn:
+        row = conn.execute(
+            "SELECT value FROM orbit_config WHERE key='agent_token_sha256'"
+        ).fetchone()
+    return str(row['value']) if row else ''
+
+
 def authorized(body: dict[str, Any]) -> None:
     actual = str(body.get('agentToken') or '')
-    if not AGENT_TOKEN or not actual or not hmac.compare_digest(actual, AGENT_TOKEN):
+    expected_hash = stored_token_hash()
+    if not actual or not expected_hash:
+        raise HTTPException(status_code=401, detail='Relay non inizializzato')
+    if not hmac.compare_digest(digest(actual), expected_hash):
         raise HTTPException(status_code=401, detail='Non autorizzato')
 
 
@@ -144,10 +165,42 @@ def health() -> dict[str, Any]:
     init_db()
     return {
         'ok': True,
-        'tokenConfigured': bool(AGENT_TOKEN),
+        'tokenConfigured': bool(stored_token_hash()),
+        'bootstrapConfigured': bool(BOOTSTRAP_SECRET),
         'accountUsername': ACCOUNT,
         'storage': 'sqlite',
     }
+
+
+@app.post('/bootstrap')
+def bootstrap(body: dict[str, Any]) -> dict[str, Any]:
+    supplied_bootstrap = str(body.get('bootstrapSecret') or '')
+    agent_token = str(body.get('agentToken') or '')
+    account = str(body.get('accountUsername') or '')
+
+    if not BOOTSTRAP_SECRET or not supplied_bootstrap:
+        raise HTTPException(status_code=401, detail='Bootstrap non disponibile')
+    if not hmac.compare_digest(supplied_bootstrap, BOOTSTRAP_SECRET):
+        raise HTTPException(status_code=401, detail='Bootstrap non autorizzato')
+    if account != ACCOUNT or len(agent_token) < 16:
+        raise HTTPException(status_code=400, detail='Configurazione agente non valida')
+
+    candidate = digest(agent_token)
+    with LOCK, db() as conn:
+        existing = conn.execute(
+            "SELECT value FROM orbit_config WHERE key='agent_token_sha256'"
+        ).fetchone()
+        if existing and not hmac.compare_digest(str(existing['value']), candidate):
+            raise HTTPException(status_code=409, detail='Relay già associato a un altro token')
+        conn.execute(
+            """
+            INSERT INTO orbit_config(key, value) VALUES ('agent_token_sha256', ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value
+            """,
+            (candidate,),
+        )
+        conn.commit()
+    return {'ok': True, 'tokenConfigured': True}
 
 
 @app.post('/api/agent/instagram-browser-auth')
@@ -178,10 +231,10 @@ def likes(body: dict[str, Any]) -> dict[str, Any]:
                 LIMIT 100
                 """
             ).fetchall()
-        manual = state('manual')
+        manual_state = state('manual')
         return {
             'accountUsername': ACCOUNT,
-            'manualOnline': int(time.time() * 1000) - manual['last_seen'] < 120000,
+            'manualOnline': int(time.time() * 1000) - manual_state['last_seen'] < 120000,
             'events': [
                 {
                     'id': row['shortcode'],
@@ -200,7 +253,10 @@ def likes(body: dict[str, Any]) -> dict[str, Any]:
     if action == 'skip':
         shortcode = str(body.get('shortcode') or '')
         with LOCK, db() as conn:
-            conn.execute('UPDATE orbit_likes SET status=? WHERE shortcode=?', ('skipped', shortcode))
+            conn.execute(
+                'UPDATE orbit_likes SET status=? WHERE shortcode=?',
+                ('skipped', shortcode),
+            )
             conn.commit()
         return {'ok': True}
 
