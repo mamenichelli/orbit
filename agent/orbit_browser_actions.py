@@ -22,7 +22,7 @@ from orbit_instagram_agent import (
 )
 
 
-POST_PATH = re.compile(r"^/p/([A-Za-z0-9_-]+)/?$")
+POST_PATH = re.compile(r"^/(?:p|reel)/([A-Za-z0-9_-]+)/?$")
 USERNAME = re.compile(r"^[a-z0-9._]{1,30}$")
 
 
@@ -314,35 +314,41 @@ def shared_post_ids(page) -> set[str]:
 
 
 def like_post(page, shortcode: str) -> bool:
-    checked_navigation(page, f"https://www.instagram.com/p/{shortcode}/")
-    main = page.locator("article").first
-    if main.count() == 0:
-        main = page.locator("main").first
-    if main.count() == 0:
-        raise RuntimeError(f"Post {shortcode}: contenuto non riconosciuto")
-    icons = main.locator('svg[aria-label="Mi piace"],svg[aria-label="Like"],svg[aria-label="Non mi piace più"],svg[aria-label="Unlike"]')
-    icons.first.wait_for(state="visible", timeout=25_000)
-    selected_label = icons.evaluate_all('''nodes => {
-        const icon=nodes.find(n=>{const r=n.getBoundingClientRect();return r.width>=20 && r.height>=20;});
-        if(!icon) return null;
-        icon.setAttribute('data-orbit-post-like-icon','true'); return icon.getAttribute('aria-label');
-    }''')
-    if selected_label in {"Non mi piace più", "Unlike"}:
-        return False
-    button = main.locator('[data-orbit-post-like-icon="true"]')
-    if button.count() != 1:
-        raise RuntimeError(f"Post {shortcode}: pulsante Mi piace non trovato")
-    button.click()
-    try:
-        page.wait_for_function('''() => {
-            const root=document.querySelector('article')||document.querySelector('main');
-            return root && Array.from(root.querySelectorAll('svg[aria-label="Non mi piace più"],svg[aria-label="Unlike"]')).some(n=>{
-                const r=n.getBoundingClientRect();return r.width>=20 && r.height>=20;
-            });
-        }''', timeout=15_000)
-    except Exception as exc:
-        raise RuntimeError(f"Post {shortcode}: like non confermato") from exc
-    return True
+    last_error: Exception | None = None
+    for media_kind in ("p", "reel"):
+        try:
+            checked_navigation(page, f"https://www.instagram.com/{media_kind}/{shortcode}/")
+            main = page.locator("article").first
+            if main.count() == 0:
+                main = page.locator("main").first
+            if main.count() == 0:
+                raise RuntimeError(f"Contenuto {shortcode}: pagina non riconosciuta")
+            icons = main.locator(
+                'svg[aria-label="Mi piace"],svg[aria-label="Like"],'
+                'svg[aria-label="Non mi piace più"],svg[aria-label="Unlike"]'
+            )
+            icons.first.wait_for(state="visible", timeout=12_000)
+            selected_label = icons.evaluate_all('''nodes => {
+                const icon=nodes.find(n=>{const r=n.getBoundingClientRect();return r.width>=20 && r.height>=20;});
+                if(!icon) return null;
+                icon.setAttribute('data-orbit-post-like-icon','true'); return icon.getAttribute('aria-label');
+            }''')
+            if selected_label in {"Non mi piace più", "Unlike"}:
+                return False
+            button = main.locator('[data-orbit-post-like-icon="true"]')
+            if button.count() != 1:
+                raise RuntimeError(f"Contenuto {shortcode}: pulsante Mi piace non trovato")
+            button.click()
+            page.wait_for_function('''() => {
+                const root=document.querySelector('article')||document.querySelector('main');
+                return root && Array.from(root.querySelectorAll('svg[aria-label="Non mi piace più"],svg[aria-label="Unlike"]')).some(n=>{
+                    const r=n.getBoundingClientRect();return r.width>=20 && r.height>=20;
+                });
+            }''', timeout=15_000)
+            return True
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"Contenuto {shortcode}: like non disponibile come post o reel") from last_error
 
 
 def run_likes(config_path: Path) -> None:
