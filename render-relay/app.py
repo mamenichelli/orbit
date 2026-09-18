@@ -20,7 +20,7 @@ BOOTSTRAP_SECRET = os.environ.get('ORBIT_RENDER_BOOTSTRAP_SECRET', '')
 ACCOUNT = os.environ.get('ORBIT_INSTAGRAM_USERNAME', 'ma.menichelli')
 DB_PATH = Path(os.environ.get('ORBIT_RELAY_DB', '/tmp/orbit-relay.db'))
 LOCK = threading.RLock()
-USERNAME_RE = re.compile(r'^[A-Za-z0-9._]{1,30}
+USERNAME_RE = re.compile(r'[A-Za-z0-9._]{1,30}')
 
 def db() -> sqlite3.Connection:
     connection = sqlite3.connect(DB_PATH, timeout=30)
