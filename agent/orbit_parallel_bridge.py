@@ -435,9 +435,48 @@ def _run_forever(config_path: Path, command: str, interval: int) -> None:
         stop.set()
 
 
+
+def force_resync_render(config_path: Path, config: dict) -> int:
+    """Re-send the durable local like-event registry to Render after relay restarts."""
+    state = actions.load_state(config_path)
+    render_urls = [url for url in dashboard_urls(config) if url.endswith(".onrender.com")]
+    if not render_urls:
+        raise RuntimeError("Relay Render non configurato")
+    events = list(state.get("likeEvents", {}).values())
+    for event in events:
+        synced = [
+            url for url in event.get("syncedDashboards", [])
+            if url not in render_urls
+        ]
+        event["syncedDashboards"] = synced
+        event["pending"] = True
+    actions.save_state(config_path, state)
+    dual_sync_like_events(config_path, config, state)
+    remaining = [
+        event for event in state.get("likeEvents", {}).values()
+        if any(
+            url not in set(event.get("syncedDashboards", []))
+            for url in render_urls
+        )
+    ]
+    restored = len(events) - len(remaining)
+    print(
+        f"Ripristino Render: {restored}/{len(events)} eventi locali reinviati.",
+        flush=True,
+    )
+    if remaining:
+        raise RuntimeError(
+            f"Ripristino incompleto: {len(remaining)} eventi restano da sincronizzare"
+        )
+    return restored
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Orbit legacy + Render relay bridge")
-    parser.add_argument("command", choices=["watch", "worker", "test", "collect"])
+    parser.add_argument(
+        "command",
+        choices=["watch", "worker", "test", "collect", "resync"],
+    )
     parser.add_argument(
         "--config",
         type=Path,
@@ -459,6 +498,10 @@ def main() -> None:
             publish_approved=True,
             history_pages=max(1, min(200, args.history_pages)),
         )
+        return
+    if args.command == "resync":
+        install_bridge()
+        force_resync_render(config_path, config)
         return
     _run_forever(config_path, args.command, args.interval)
 
