@@ -317,9 +317,13 @@ def dual_sync_like_events(config_path: Path, config: dict, state: dict) -> bool:
                 all_ok = False
                 break
 
+    required_urls = [url for url in urls if url.endswith(".onrender.com")] or urls
     for event in events:
         synced = set(event.get("syncedDashboards", []))
-        event["pending"] = any(base_url not in synced for base_url in urls)
+        # Orbit Parallel/Render is authoritative for the new dashboard.
+        # Legacy remains best-effort and is retried because each sync still
+        # checks syncedDashboards independently.
+        event["pending"] = any(base_url not in synced for base_url in required_urls)
     actions.save_state(config_path, state)
     return all_ok
 
