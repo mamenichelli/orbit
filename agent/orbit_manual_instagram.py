@@ -9,6 +9,7 @@ import logging
 import hashlib
 import os
 import threading
+import traceback
 from contextlib import contextmanager
 from pathlib import Path
 import re
@@ -141,7 +142,7 @@ def assert_account_ui(page, expected_username):
         && text.toLowerCase()===expected.toLowerCase();
     })"""
     try:
-        page.wait_for_function(script, expected_username, timeout=45000)
+        page.wait_for_function(script, arg=expected_username, timeout=45000)
     except BrowserTimeout as exc:
         raise RuntimeError(
             f"Profilo attivo non verificabile, atteso @{expected_username}: nessuna azione eseguita") from exc
@@ -526,6 +527,7 @@ if __name__ == "__main__":
         else: collect(args.config.resolve(), publish_approved=args.publish_collected_posts, history_pages=max(1, min(40, args.history_pages)))
     except Exception as exc:
         logging.error("Agente fermato: %s", type(exc).__name__)
-        if isinstance(exc, RuntimeError): print(str(exc), flush=True)
-        print(f"Agente manuale fermato: {type(exc).__name__}. Nessuna azione sarà ripetuta automaticamente.", flush=True)
+        print(f"ERRORE REALE: {type(exc).__name__}: {exc}", flush=True)
+        traceback.print_exc()
+        print("Nessuna azione Instagram sarà ripetuta automaticamente.", flush=True)
         raise SystemExit(1)
