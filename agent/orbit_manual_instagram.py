@@ -189,10 +189,18 @@ def inbox_signature(page):
     return page.evaluate('''() => {
       const tabs=document.querySelector('[role="tablist"]');if(!tabs)return '';
       const pane=tabs.getBoundingClientRect();
-      return Array.from(document.querySelectorAll('[role="button"]')).filter(n=>{
-        const r=n.getBoundingClientRect();return r.y>=pane.bottom && Math.abs(r.x-pane.x)<20 && Math.abs(r.width-pane.width)<20
-          && r.height>=50 && r.height<=160 && n.querySelector('img') && n.innerText.trim();
-      }).map(n=>n.innerText.trim().split(String.fromCharCode(10))[0]+'|'+(n.querySelector('img')?.src||'').split('?')[0]).join('||');
+      const directLinks=Array.from(document.querySelectorAll('a[href*="/direct/t/"]'));
+      const roleButtons=Array.from(document.querySelectorAll('[role="button"]'));
+      const candidates=[...new Set([...directLinks,...roleButtons])];
+      return candidates.filter(n=>{
+        const r=n.getBoundingClientRect();
+        return r.y>=pane.bottom && r.x<=pane.right+40 && r.right>=pane.left-10
+          && r.height>=44 && r.height<=180 && n.querySelector('img') && n.innerText.trim();
+      }).map(n=>{
+        const title=n.innerText.trim().split(String.fromCharCode(10))[0];
+        const href=n.getAttribute('href')||n.querySelector('a[href*="/direct/t/"]')?.getAttribute('href')||'';
+        return title+'|'+href+'|'+(n.querySelector('img')?.src||'').split('?')[0];
+      }).join('||');
     }''')
 
 
@@ -202,25 +210,36 @@ def mark_general_rows(page):
       document.querySelectorAll('[data-orbit-thread-row]').forEach(n=>n.removeAttribute('data-orbit-thread-row'));
       const tabs=document.querySelector('[role="tablist"]');if(!tabs)return [];
       const pane=tabs.getBoundingClientRect();
-      const rows=Array.from(document.querySelectorAll('[role="button"]')).filter(n=>{
-        const r=n.getBoundingClientRect();return r.y>=pane.bottom && Math.abs(r.x-pane.x)<20 && Math.abs(r.width-pane.width)<20
-          && r.height>=50 && r.height<=160 && n.querySelector('img') && n.innerText.trim();
+      const directLinks=Array.from(document.querySelectorAll('a[href*="/direct/t/"]'));
+      const roleButtons=Array.from(document.querySelectorAll('[role="button"]'));
+      const candidates=[...new Set([...directLinks,...roleButtons])];
+      const rows=candidates.filter(n=>{
+        const r=n.getBoundingClientRect();
+        return r.y>=pane.bottom && r.x<=pane.right+40 && r.right>=pane.left-10
+          && r.height>=44 && r.height<=180 && n.querySelector('img') && n.innerText.trim();
       });
       return rows.map((n,index)=>{
         const title=n.innerText.trim().split(String.fromCharCode(10)).map(s=>s.trim()).filter(Boolean)[0];
+        const href=n.getAttribute('href')||n.querySelector('a[href*="/direct/t/"]')?.getAttribute('href')||'';
         n.setAttribute('data-orbit-thread-row',index);
-        return {index,title,key:title+'|'+(n.querySelector('img')?.src||'').split('?')[0]};
+        return {index,title,href,key:title+'|'+href+'|'+(n.querySelector('img')?.src||'').split('?')[0]};
       });
     }''')
 
 
 def read_visible_posts(page, known_cards=None, known_events=None, on_found=None):
-    """Follow only actual Instagram /p/ links. Stories and file dialogs are ignored."""
+    """Collect actual Instagram posts and reels shared in the open General chat."""
     assert_general(page)
-    found = {pid: {} for href in page.locator('a[href*="/p/"]').evaluate_all(
-        "nodes=>nodes.map(n=>n.getAttribute('href')||'')") if (pid := post_id(href))}
-    if on_found:
-        for pid in found: on_found(pid, {})
+    hrefs = page.locator('a[href*="/p/"],a[href*="/reel/"]').evaluate_all(
+        "nodes=>nodes.map(n=>n.getAttribute('href')||'')")
+    found = {}
+    for href in hrefs:
+        if not (pid := post_id(href)):
+            continue
+        media_type = "reel" if urlparse(href).path.startswith("/reel/") else "post"
+        found[pid] = {"mediaType": media_type}
+        if on_found:
+            on_found(pid, found[pid])
     def mark_cards():
         return page.evaluate('''() => {
       document.querySelectorAll('[data-orbit-manual-card]').forEach(n=>n.removeAttribute('data-orbit-manual-card'));
@@ -242,7 +261,7 @@ def read_visible_posts(page, known_cards=None, known_events=None, on_found=None)
         fingerprint = hashlib.sha256(item.get('cacheKey','').encode('utf-8')).hexdigest() if item.get('cacheKey') else None
         cached_pid = known_cards.get(fingerprint) if known_cards is not None and fingerprint else None
         cached = (known_events or {}).get(cached_pid, {}).get('metadata', {})
-        if cached_pid and post_id('/p/'+cached_pid+'/') and cached.get('authorUsername'):
+        if cached_pid and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", cached_pid) and cached.get('authorUsername'):
             found[cached_pid] = cached
             if on_found: on_found(cached_pid, cached)
             continue
@@ -260,6 +279,7 @@ def read_visible_posts(page, known_cards=None, known_events=None, on_found=None)
             target.wait_for_load_state("domcontentloaded", timeout=15000)
             if pid := post_id(target.url):
                 target.wait_for_timeout(1200)
+                media_type = "reel" if urlparse(target.url).path.startswith("/reel/") else "post"
                 found[pid] = target.evaluate(r'''() => {
                   const root=document.querySelector('article')||document.querySelector('main');
                   const image=root && Array.from(root.querySelectorAll('img')).find(n=>{
@@ -277,6 +297,7 @@ def read_visible_posts(page, known_cards=None, known_events=None, on_found=None)
                   const rawDate=time?.getAttribute('datetime');const publishedAt=rawDate && Number.isFinite(Date.parse(rawDate)) ? new Date(rawDate).toISOString():null;
                   return {caption:caption.slice(0,2000),previewUrl,authorUsername,publishedAt};
                 }''')
+                found[pid]["mediaType"] = media_type
                 if known_cards is not None and fingerprint and found[pid].get('authorUsername'):
                     known_cards[fingerprint] = pid
                 if on_found: on_found(pid, found[pid])
@@ -311,7 +332,10 @@ def collect(config_path, publish_approved=False, history_pages=40, on_group=None
             deadline = time.monotonic() + 30
             while not mark_general_rows(page) and time.monotonic() < deadline:
                 page.wait_for_timeout(1000)
-            if not mark_general_rows(page): raise RuntimeError("Conversazioni non caricate: raccolta interrotta, non zero gruppi")
+            initial_rows = mark_general_rows(page)
+            if not initial_rows:
+                raise RuntimeError("Conversazioni Generali non caricate: raccolta interrotta")
+            print(f"Generali: {len(initial_rows)} conversazioni visibili all'avvio", flush=True)
             visited = set()
             idle = 0
             for _ in range(80):
