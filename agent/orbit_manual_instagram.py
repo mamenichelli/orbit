@@ -260,7 +260,7 @@ def read_visible_posts(page, known_cards=None, known_events=None, on_found=None)
             target.wait_for_load_state("domcontentloaded", timeout=15000)
             if pid := post_id(target.url):
                 target.wait_for_timeout(1200)
-                found[pid] = target.evaluate('''() => {
+                found[pid] = target.evaluate(r'''() => {
                   const root=document.querySelector('article')||document.querySelector('main');
                   const image=root && Array.from(root.querySelectorAll('img')).find(n=>{
                     const r=n.getBoundingClientRect(); return r.width>=200 && r.height>=180;
