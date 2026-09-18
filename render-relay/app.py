@@ -326,11 +326,64 @@ def likes(body: dict[str, Any]) -> dict[str, Any]:
     if len(events) > 100:
         raise HTTPException(status_code=400, detail='Troppi eventi')
 
+    terminal_statuses = {'applied', 'already_liked', 'skipped'}
+
     with LOCK, db() as conn:
         for event in events:
             shortcode = str(event.get('shortcode') or '')
             if not shortcode:
                 continue
+
+            existing = conn.execute(
+                """
+                SELECT status, liked_at, groups_json, metadata_json, observed_at
+                FROM orbit_likes
+                WHERE shortcode=?
+                """,
+                (shortcode,),
+            ).fetchone()
+
+            incoming_groups = event.get('groups') if isinstance(event.get('groups'), list) else []
+            merged_groups = []
+            seen_groups: set[tuple[str, str]] = set()
+            for group in (
+                (json.loads(existing['groups_json'] or '[]') if existing else [])
+                + incoming_groups
+            ):
+                if not isinstance(group, dict):
+                    continue
+                key = (
+                    str(group.get('threadPath') or ''),
+                    str(group.get('title') or ''),
+                )
+                if key in seen_groups:
+                    continue
+                seen_groups.add(key)
+                merged_groups.append(group)
+
+            incoming_metadata = event.get('metadata') if isinstance(event.get('metadata'), dict) else {}
+            existing_metadata = (
+                json.loads(existing['metadata_json'] or '{}')
+                if existing
+                else {}
+            )
+            merged_metadata = dict(existing_metadata)
+            for key, value in incoming_metadata.items():
+                if value not in (None, '', [], {}):
+                    merged_metadata[key] = value
+
+            incoming_status = str(event.get('status') or 'discovered')
+            if existing and str(existing['status']) in terminal_statuses:
+                effective_status = str(existing['status'])
+                effective_liked_at = existing['liked_at']
+            else:
+                effective_status = incoming_status
+                effective_liked_at = event.get('likedAt')
+
+            observed_at = str(event.get('observedAt') or '')
+            if existing and str(existing['observed_at'] or '') > observed_at:
+                observed_at = str(existing['observed_at'] or '')
+
             conn.execute(
                 """
                 INSERT INTO orbit_likes
@@ -350,11 +403,11 @@ def likes(body: dict[str, Any]) -> dict[str, Any]:
                     shortcode,
                     str(body.get('accountUsername') or active_username()),
                     str(event.get('eventId') or ''),
-                    str(event.get('status') or 'discovered'),
-                    event.get('likedAt'),
-                    str(event.get('observedAt') or ''),
-                    json.dumps(event.get('groups') or [], separators=(',', ':')),
-                    json.dumps(event.get('metadata') or {}, separators=(',', ':')),
+                    effective_status,
+                    effective_liked_at,
+                    observed_at,
+                    json.dumps(merged_groups, separators=(',', ':')),
+                    json.dumps(merged_metadata, separators=(',', ':')),
                 ),
             )
         conn.commit()
@@ -399,7 +452,11 @@ def manual(body: dict[str, Any]) -> dict[str, Any]:
             ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail='Richiesta non trovata')
-        return {'status': row['status'], 'message': row['message'] or ''}
+        return {
+            'status': row['status'],
+            'message': row['message'] or '',
+            'terminal': row['status'] in {'applied', 'already_liked', 'failed'},
+        }
 
     if action == 'claim':
         cutoff = int(time.time() * 1000) - 120000
@@ -466,6 +523,11 @@ def manual(body: dict[str, Any]) -> dict[str, Any]:
                         ),
                     )
             conn.commit()
-        return {'ok': True}
+        return {
+            'ok': True,
+            'status': status,
+            'shortcode': row['shortcode'] if row else '',
+            'removed': status in {'applied', 'already_liked'},
+        }
 
     raise HTTPException(status_code=400, detail='Azione non valida')
