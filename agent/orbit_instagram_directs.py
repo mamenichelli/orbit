@@ -251,7 +251,7 @@ def watch(config_path: Path, interval: int) -> None:
                 except RuntimeError as exc:
                     message = str(exc)
                     try:
-                        _collection_control(config, "failed", version=version)
+                        _collection_control(config, "failed", version=version, message=message[:300])
                     except requests.RequestException:
                         pass
                     if message.startswith(("Sessione Instagram scaduta", "Profilo attivo @")):
@@ -263,11 +263,13 @@ def watch(config_path: Path, interval: int) -> None:
                         next_scan = time.monotonic() + 60
                     else:
                         next_scan = time.monotonic() + 30
-                except Exception:
+                except Exception as exc:
+                    message = re.sub(r"\s+", " ", str(exc)).strip()[:300] or type(exc).__name__
                     try:
-                        _collection_control(config, "failed", version=version)
+                        _collection_control(config, "failed", version=version, message=message)
                     except requests.RequestException:
                         pass
+                    print(f"Raccolta Generali fallita: {message}", flush=True)
                     next_scan = time.monotonic() + 30
         finally:
             stop.set()
