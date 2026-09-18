@@ -119,7 +119,8 @@ def control(name: str, body: dict[str, Any]) -> dict[str, Any]:
 
     current = state(name)
     now = int(time.time() * 1000)
-    current['last_seen'] = now
+    if body.get('agentHeartbeat') is True:
+        current['last_seen'] = now
 
     if action == 'request':
         current['requested_at'] = now
@@ -300,7 +301,7 @@ def likes(body: dict[str, Any]) -> dict[str, Any]:
 @app.post('/api/agent/instagram-manual')
 def manual(body: dict[str, Any]) -> dict[str, Any]:
     authorized(body)
-    control('manual', {'action': 'poll'})
+    control('manual', {'action': 'poll', 'agentHeartbeat': True})
     action = str(body.get('action') or 'claim')
 
     if action == 'queue':
