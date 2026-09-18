@@ -274,23 +274,34 @@ def dual_sync_like_events(config_path: Path, config: dict, state: dict) -> bool:
         ]
         for offset in range(0, len(pending), 40):
             batch = pending[offset : offset + 40]
-            payload = [
-                {
-                    key: event[key]
-                    for key in (
-                        "eventId",
-                        "shortcode",
-                        "status",
-                        "likedAt",
-                        "observedAt",
-                        "groups",
-                    )
+            payload = []
+            for event in batch:
+                groups = [dict(group) for group in event.get("groups", [])]
+                metadata = dict(event.get("metadata") or {})
+
+                if base_url.endswith(".chatgpt.site"):
+                    for group in groups:
+                        if group.get("verification") in {
+                            "general-href-v3",
+                            "general-click-v3",
+                        }:
+                            group["verification"] = "general-roster-v2"
+                    # Legacy accepts metadata only when caption is present and
+                    # does not need mediaType for the historical dashboard.
+                    if not isinstance(metadata.get("caption"), str):
+                        metadata = {}
+
+                entry = {
+                    "eventId": event["eventId"],
+                    "shortcode": event["shortcode"],
+                    "status": event["status"],
+                    "likedAt": event["likedAt"],
+                    "observedAt": event["observedAt"],
+                    "groups": groups,
                 }
-                for event in batch
-            ]
-            for entry, event in zip(payload, batch):
-                if event.get("metadata"):
-                    entry["metadata"] = event["metadata"]
+                if metadata:
+                    entry["metadata"] = metadata
+                payload.append(entry)
             try:
                 response = _post_one(
                     config,
