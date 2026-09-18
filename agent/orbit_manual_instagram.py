@@ -24,47 +24,110 @@ from orbit_browser_actions import (AccountVerificationUnavailable, assert_accoun
     load_state, save_state, record_like_event, sync_like_events)
 
 
+def _update_local_like_state(config_path, config, shortcode, status):
+    try:
+        state = load_state(config_path)
+        event = state.get("likeEvents", {}).get(shortcode)
+        if not event:
+            return
+        event["status"] = status
+        event["likedAt"] = (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            if status == "applied"
+            else None
+        )
+        event["pending"] = True
+        save_state(config_path, state)
+        sync_like_events(config_path, config, state)
+    except Exception:
+        logging.exception("Stato locale like non sincronizzato")
+
+
 def run_worker_session(playwright, config_path, config):
-        context, browser = browser_context(playwright, config_path, config)
+    logging.info("Worker like pronto: polling coda prima del browser")
+    while True:
         try:
-            page = context.new_page()
-            identity_page = context.new_page()
-            checked_collection_navigation(identity_page, "https://www.instagram.com/direct/inbox/")
-            assert_account_ui(identity_page, required(config, "ORBIT_INSTAGRAM_USERNAME"))
-            logging.info("Avvio collegamento manuale")
-            while True:
-                try:
-                    result = gateway_post(config, "/api/agent/instagram-manual", {
-                        "action": "claim", "accountUsername": required(config, "ORBIT_INSTAGRAM_USERNAME")})
-                except requests.RequestException:
-                    logging.warning("Rete Orbit non disponibile: attendo senza eseguire azioni")
-                    time.sleep(10)
-                    continue
-                job = result.get("job")
-                if not job:
-                    time.sleep(5)
-                    continue
-                status, message = "failed", "Richiesta scaduta: nessuna azione eseguita"
-                if valid_job(job):
-                    try:
-                        assert_account_ui(identity_page, required(config, "ORBIT_INSTAGRAM_USERNAME"))
-                        added = like_post(page, job["shortcode"])
-                        status = "applied" if added else "already_liked"
-                        message = "Mi piace verificato" if added else "Mi piace già presente"
-                    except Exception:
-                        message = "Instagram non ha confermato il like: controlla il post prima di riprovare"
-                # Never replay a command after an interrupted execution or acknowledgment.
-                try:
-                    gateway_post(config, "/api/agent/instagram-manual", {
-                        "action": "complete", "accountUsername": required(config, "ORBIT_INSTAGRAM_USERNAME"),
-                        "id": job["id"], "status": status, "message": message})
-                except requests.RequestException:
-                    # The server keeps the job executing until it expires; never replay it.
-                    logging.warning("Conferma Orbit rinviata: il comando non sarà ripetuto")
-                print(message, flush=True)
-        finally:
-            context.close()
-            if browser: browser.close()
+            result = gateway_post(
+                config,
+                "/api/agent/instagram-manual",
+                {
+                    "action": "claim",
+                    "accountUsername": required(config, "ORBIT_INSTAGRAM_USERNAME"),
+                },
+            )
+        except requests.RequestException:
+            logging.warning("Rete Orbit non disponibile: attendo senza eseguire azioni")
+            time.sleep(5)
+            continue
+
+        job = result.get("job")
+        if not job:
+            time.sleep(3)
+            continue
+
+        status = "failed"
+        message = "Richiesta scaduta: nessuna azione eseguita"
+
+        if valid_job(job):
+            context = browser = None
+            try:
+                context, browser = browser_context(playwright, config_path, config)
+                identity_page = context.new_page()
+                checked_collection_navigation(
+                    identity_page,
+                    "https://www.instagram.com/direct/inbox/",
+                )
+                assert_account_ui(
+                    identity_page,
+                    required(config, "ORBIT_INSTAGRAM_USERNAME"),
+                )
+                page = context.new_page()
+                added = like_post(page, job["shortcode"])
+                status = "applied" if added else "already_liked"
+                message = "Mi piace verificato" if added else "Mi piace già presente"
+                _update_local_like_state(
+                    config_path,
+                    config,
+                    job["shortcode"],
+                    status,
+                )
+            except Exception as exc:
+                detail = re.sub(r"\s+", " ", str(exc)).strip()
+                message = (
+                    f"Instagram non ha confermato il like"
+                    + (f": {detail[:220]}" if detail else "")
+                )
+                logging.exception(
+                    "Like manuale fallito per %s",
+                    job.get("shortcode"),
+                )
+            finally:
+                if context:
+                    context.close()
+                if browser:
+                    browser.close()
+
+        try:
+            gateway_post(
+                config,
+                "/api/agent/instagram-manual",
+                {
+                    "action": "complete",
+                    "accountUsername": required(config, "ORBIT_INSTAGRAM_USERNAME"),
+                    "id": job["id"],
+                    "status": status,
+                    "message": message,
+                },
+            )
+        except requests.RequestException:
+            logging.warning(
+                "Conferma Orbit rinviata: il comando non sarà ripetuto"
+            )
+
+        print(
+            f"Like {job.get('shortcode')}: {status} · {message}",
+            flush=True,
+        )
 
 
 def run_worker(config_path):
@@ -73,11 +136,11 @@ def run_worker(config_path):
         try:
             with sync_playwright() as playwright:
                 run_worker_session(playwright, config_path, config)
-        except AccountVerificationUnavailable:
-            logging.warning("Identità Instagram temporaneamente non verificabile: collegamento sospeso")
-        except BrowserError:
-            logging.exception("Browser Instagram interrotto: riavvio sicuro del collegamento manuale")
-        time.sleep(60)
+        except (AccountVerificationUnavailable, BrowserError):
+            logging.exception("Worker like interrotto: riavvio tra 10 secondi")
+        except Exception:
+            logging.exception("Worker like inatteso: riavvio tra 10 secondi")
+        time.sleep(10)
 
 
 def valid_job(job):
