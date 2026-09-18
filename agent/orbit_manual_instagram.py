@@ -90,32 +90,35 @@ def valid_job(job):
 
 def scroll_chat(page):
     return page.evaluate('''() => {
-      const tabs=document.querySelector('[role="tablist"]'); if(!tabs) return false;
-      const edge=tabs.getBoundingClientRect().right;
-      const panes=Array.from(document.querySelectorAll('div')).filter(n=>{
-        const r=n.getBoundingClientRect(); return r.x>=edge-10 && r.width>250 && r.height>200
-          && n.scrollHeight>n.clientHeight+10 && /auto|scroll/.test(getComputedStyle(n).overflowY);
-      }).sort((a,b)=>b.clientHeight-a.clientHeight);
+      const panes=Array.from(document.querySelectorAll('main,section,div')).filter(n=>{
+        const r=n.getBoundingClientRect();
+        const style=getComputedStyle(n);
+        return r.width>300 && r.height>250 && r.x>innerWidth*.25
+          && n.scrollHeight>n.clientHeight+20
+          && /auto|scroll/.test(style.overflowY);
+      }).sort((a,b)=>(b.clientHeight*b.clientWidth)-(a.clientHeight*a.clientWidth));
       const pane=panes[0]; if(!pane) return false;
-      const old=pane.scrollTop; pane.scrollTop=Math.max(0,old-pane.clientHeight*.8);
+      const old=pane.scrollTop;
+      if(getComputedStyle(pane).flexDirection==='column-reverse') pane.scrollTop-=pane.clientHeight*.8;
+      else pane.scrollTop=Math.max(0,old-pane.clientHeight*.8);
       return pane.scrollTop!==old;
     }''')
 
 
 def show_latest_messages(page):
-    assert_general(page)
     for _ in range(3):
         page.evaluate('''() => {
-          const tabs=document.querySelector('[role="tablist"]');if(!tabs)return;
-          const edge=tabs.getBoundingClientRect().right;
-          const panes=Array.from(document.querySelectorAll('div')).filter(n=>{
-            const r=n.getBoundingClientRect();return r.x>=edge-10 && r.width>250 && r.height>200
-              && n.scrollHeight>n.clientHeight && /auto|scroll/.test(getComputedStyle(n).overflowY);
-          }).sort((a,b)=>b.clientHeight-a.clientHeight);
-          const pane=panes[0];if(pane)pane.scrollTop=getComputedStyle(pane).flexDirection==='column-reverse'?0:pane.scrollHeight;
+          const panes=Array.from(document.querySelectorAll('main,section,div')).filter(n=>{
+            const r=n.getBoundingClientRect();
+            const style=getComputedStyle(n);
+            return r.width>300 && r.height>250 && r.x>innerWidth*.25
+              && n.scrollHeight>n.clientHeight+20
+              && /auto|scroll/.test(style.overflowY);
+          }).sort((a,b)=>(b.clientHeight*b.clientWidth)-(a.clientHeight*a.clientWidth));
+          const pane=panes[0];
+          if(pane) pane.scrollTop=getComputedStyle(pane).flexDirection==='column-reverse'?0:pane.scrollHeight;
         }''')
         page.wait_for_timeout(500)
-    assert_general(page)
 
 
 def general_selected(page):
@@ -229,8 +232,7 @@ def mark_general_rows(page):
 
 
 def read_visible_posts(page, known_cards=None, known_events=None, on_found=None):
-    """Collect actual Instagram posts and reels shared in the open General chat."""
-    assert_general(page)
+    """Collect actual Instagram posts and reels shared in one verified General chat."""
     hrefs = page.locator('a[href*="/p/"],a[href*="/reel/"]').evaluate_all(
         "nodes=>nodes.map(n=>n.getAttribute('href')||'')")
     found = {}
@@ -316,119 +318,143 @@ def read_visible_posts(page, known_cards=None, known_events=None, on_found=None)
         finally:
             for tab in list(page.context.pages):
                 if tab not in before: tab.close()
-    assert_general(page)
     return found, preserved
 
 
 def collect(config_path, publish_approved=False, history_pages=40, on_group=None):
     config, state = load_config(config_path), load_state(config_path)
     groups = posts = 0
+    inbox_url = "https://www.instagram.com/direct/inbox/"
+
+    def return_to_general(page):
+        checked_collection_navigation(page, inbox_url)
+        assert_account_ui(page, required(config, "ORBIT_INSTAGRAM_USERNAME"))
+        select_general(page)
+        page.wait_for_timeout(1200)
+
     with sync_playwright() as p:
         context, browser = browser_context(p, config_path, config)
         try:
             page = context.new_page()
-            checked_collection_navigation(page, "https://www.instagram.com/direct/inbox/")
-            assert_account_ui(page, required(config, "ORBIT_INSTAGRAM_USERNAME"))
-            select_general(page)
+            return_to_general(page)
+
             deadline = time.monotonic() + 30
-            while not mark_general_rows(page) and time.monotonic() < deadline:
+            rows = mark_general_rows(page)
+            while not rows and time.monotonic() < deadline:
                 page.wait_for_timeout(1000)
-            initial_rows = mark_general_rows(page)
-            if not initial_rows:
-                raise RuntimeError("Conversazioni Generali non caricate: raccolta interrotta")
-            print(f"Generali: {len(initial_rows)} conversazioni visibili all'avvio", flush=True)
-            visited = set()
-            idle = 0
-            for _ in range(80):
-                assert_general(page)
                 rows = mark_general_rows(page)
-                new = [row for row in rows if row["key"] not in visited]
-                for row in new:
-                    assert_general(page)
-                    current = mark_general_rows(page)
-                    match = next((r for r in current if r["key"] == row["key"]), None)
-                    if not match: continue
-                    before_url = page.url
-                    try:
-                        page.locator(f'[data-orbit-thread-row="{match["index"]}"]').click(timeout=10000)
-                    except BrowserTimeout:
-                        visited.add(row["key"])
-                        assert_general(page)
-                        continue
-                    try:
-                        page.wait_for_url(lambda url: str(url) != before_url and '/direct/t/' in str(url), timeout=10000)
-                    except Exception:
-                        # The most recent General chat may already be selected.
-                        # Its unchanged URL is valid only after the header check below.
-                        print("Chat già aperta: verifico intestazione e cartella prima della raccolta", flush=True)
-                    page.wait_for_timeout(2500)
-                    if not re.fullmatch(r"/direct/t/[^/]+/?", urlparse(page.url).path):
-                        visited.add(row["key"])
-                        print("Conversazione non verificata: salto senza azioni", flush=True)
-                        checked_collection_navigation(page, "https://www.instagram.com/direct/inbox/")
-                        select_general(page)
-                        continue
-                    select_general(page)
-                    visited.add(row["key"])
-                    observed_title = str(row["title"]).strip()
-                    if not observed_title: continue
-                    header = page.get_by_role("button", name=re.compile(r"Open the details pane of the chat|Apri.*dettagli.*chat", re.I)).first
-                    try:
-                        header.wait_for(state="visible", timeout=20000)
-                        deadline = time.monotonic() + 20
-                        while header.inner_text().strip()[:200] != observed_title[:200] and time.monotonic() < deadline:
-                            page.wait_for_timeout(250)
-                        if header.inner_text().strip()[:200] != observed_title[:200]:
-                            print("Intestazione chat non corrispondente a Generale: post esclusi", flush=True)
-                            continue
-                    except BrowserTimeout:
-                        print("Intestazione chat non confermata: post esclusi", flush=True)
-                        continue
-                    group = {"title": observed_title[:200], "threadPath": urlparse(page.url).path.rstrip("/") + "/", "folder": "general", "verification": "general-roster-v2"}
-                    show_latest_messages(page)
-                    groups += 1
-                    seen = set()
-                    def persist_found(pid, metadata):
-                        record_like_event(state, pid, [group], 'discovered')
-                        if metadata and state['likeEvents'][pid].get('metadata') != metadata:
-                            state['likeEvents'][pid]['metadata'] = metadata
-                            state['likeEvents'][pid]['pending'] = True
-                        save_state(config_path, state)
-                        if publish_approved: sync_like_events(config_path, config, state)
-                    for _ in range(history_pages):
-                        known_cards = state.setdefault('generalCardCache', {}).setdefault(group['threadPath'], {})
-                        found, preserved = read_visible_posts(page, known_cards, state.get('likeEvents', {}), persist_found)
-                        assert_general(page)
-                        for pid in found:
-                            record_like_event(state, pid, [group], "discovered")
-                            if found[pid] and state['likeEvents'][pid].get('metadata') != found[pid]:
-                                state["likeEvents"][pid]["metadata"] = found[pid]
-                                state["likeEvents"][pid]["pending"] = True
-                        posts += len(found.keys() - seen); seen.update(found)
-                        save_state(config_path, state)
-                        if publish_approved:
-                            sync_like_events(config_path, config, state)
-                        if not preserved or not scroll_chat(page): break
-                        page.wait_for_timeout(1200)
-                    print(f"Raccolta: {groups} conversazioni, {posts} post; nessun like eseguito", flush=True)
-                    if on_group and not on_group(): return 'interrupted'
-                idle = idle + 1 if not new else 0
-                if idle >= 3 or not rows: break
-                mark_general_rows(page)
-                assert_general(page)
-                page.locator('[data-orbit-thread-row]').first.evaluate('''n=>{
-                  for(let p=n.parentElement;p;p=p.parentElement) {
-                    if(p.scrollHeight>p.clientHeight && /auto|scroll/.test(getComputedStyle(p).overflowY)) {
-                      p.scrollTop+=p.clientHeight*.8;break;
-                    }
-                  }
-                }''')
-                page.wait_for_timeout(1500)
-            if any(event.get('pending') for event in state.get('likeEvents', {}).values()):
-                raise requests.ConnectionError('Post conservati localmente ma non ancora confermati da Orbit')
+            if not rows:
+                raise RuntimeError("Conversazioni Generali non caricate: raccolta interrotta")
+
+            verified_rows = [
+                row for row in rows
+                if re.fullmatch(r"/direct/t/[^/]+/?", urlparse(str(row.get("href") or "")).path)
+            ]
+            if not verified_rows:
+                raise RuntimeError(
+                    "Generali visibile ma nessuna conversazione espone un link /direct/t/: markup Instagram cambiato"
+                )
+
+            print(
+                f"Generali: {len(rows)} conversazioni visibili, "
+                f"{len(verified_rows)} con URL verificato",
+                flush=True,
+            )
+
+            visited_paths: set[str] = set()
+            for row in verified_rows:
+                thread_path = urlparse(str(row["href"])).path.rstrip("/") + "/"
+                if thread_path in visited_paths:
+                    continue
+                visited_paths.add(thread_path)
+
+                observed_title = str(row.get("title") or "").strip()[:200]
+                if not observed_title:
+                    observed_title = thread_path
+
+                target_url = "https://www.instagram.com" + thread_path
+                checked_collection_navigation(page, target_url)
+                page.wait_for_timeout(1800)
+
+                current_path = urlparse(page.url).path.rstrip("/") + "/"
+                if current_path != thread_path:
+                    print(
+                        f"Salto {observed_title}: URL chat non confermato "
+                        f"({current_path} != {thread_path})",
+                        flush=True,
+                    )
+                    return_to_general(page)
+                    continue
+
+                group = {
+                    "title": observed_title,
+                    "threadPath": thread_path,
+                    "folder": "general",
+                    "verification": "general-href-v3",
+                }
+
+                show_latest_messages(page)
+                groups += 1
+                seen: set[str] = set()
+
+                def persist_found(pid, metadata):
+                    record_like_event(state, pid, [group], "discovered")
+                    if metadata and state["likeEvents"][pid].get("metadata") != metadata:
+                        state["likeEvents"][pid]["metadata"] = metadata
+                        state["likeEvents"][pid]["pending"] = True
+                    save_state(config_path, state)
+                    if publish_approved:
+                        sync_like_events(config_path, config, state)
+
+                for _ in range(history_pages):
+                    known_cards = state.setdefault("generalCardCache", {}).setdefault(
+                        group["threadPath"], {}
+                    )
+                    found, preserved = read_visible_posts(
+                        page,
+                        known_cards,
+                        state.get("likeEvents", {}),
+                        persist_found,
+                    )
+                    for pid in found:
+                        record_like_event(state, pid, [group], "discovered")
+                        if (
+                            found[pid]
+                            and state["likeEvents"][pid].get("metadata") != found[pid]
+                        ):
+                            state["likeEvents"][pid]["metadata"] = found[pid]
+                            state["likeEvents"][pid]["pending"] = True
+                    newly_seen = found.keys() - seen
+                    posts += len(newly_seen)
+                    seen.update(found)
+                    save_state(config_path, state)
+                    if publish_approved:
+                        sync_like_events(config_path, config, state)
+                    if not preserved or not scroll_chat(page):
+                        break
+                    page.wait_for_timeout(1000)
+
+                print(
+                    f"Raccolta: {groups} conversazioni, {posts} contenuti totali; "
+                    f"{len(seen)} in {observed_title}",
+                    flush=True,
+                )
+                if on_group and not on_group():
+                    return "interrupted"
+
+                return_to_general(page)
+
+            if any(
+                event.get("pending")
+                for event in state.get("likeEvents", {}).values()
+            ):
+                raise requests.ConnectionError(
+                    "Contenuti conservati localmente ma non ancora confermati da Orbit"
+                )
         finally:
             context.close()
-            if browser: browser.close()
+            if browser:
+                browser.close()
 
 
 @contextmanager
