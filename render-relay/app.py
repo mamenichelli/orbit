@@ -26,6 +26,8 @@ def db() -> sqlite3.Connection:
 
 
 def init_db() -> None:
+    if not AGENT_TOKEN:
+        raise RuntimeError('ORBIT_AGENT_TOKEN missing')
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with LOCK, db() as conn:
         conn.executescript(
