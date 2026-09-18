@@ -6,13 +6,19 @@ $config = Join-Path $project '.env.agent'
 $runtime = Join-Path $project '.orbit-agent'
 $runner = Join-Path $PSScriptRoot 'run-orbit-manual.ps1'
 $log = Join-Path $runtime 'parallel-manual.log'
+$startupDir = [Environment]::GetFolderPath('Startup')
+$startupCmd = Join-Path $startupDir 'Orbit Parallel Manual.cmd'
 
 if (!(Test-Path -LiteralPath $python) -or !(Test-Path -LiteralPath $config)) { throw 'Python o configurazione agente assenti' }
 if (!(Test-Path -LiteralPath $bridge)) { throw 'Bridge Orbit Parallel assente' }
 New-Item -ItemType Directory -Force -Path $runtime | Out-Null
 
+Stop-ScheduledTask -TaskName 'Orbit Instagram Manual Likes' -ErrorAction SilentlyContinue
+Unregister-ScheduledTask -TaskName 'Orbit Instagram Manual Likes' -Confirm:$false -ErrorAction SilentlyContinue
+
 Get-CimInstance Win32_Process | Where-Object {
-    $_.Name -match '^python(w)?\.exe$' -and $_.CommandLine -and (
+    $_.CommandLine -and (
+        $_.CommandLine -like '*run-orbit-manual.ps1*' -or
         $_.CommandLine -like '*orbit_parallel_bridge.py* worker *' -or
         $_.CommandLine -like '*orbit_instagram_directs.py* worker *'
     )
@@ -33,15 +39,26 @@ while (`$true) {
 "@
 Set-Content -LiteralPath $runner -Value $runnerBody -Encoding UTF8
 
-$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
-$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1)
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -WorkingDirectory $project -Argument ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $runner)
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+$startupBody = @"
+@echo off
+start "" /min powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "$runner"
+exit /b 0
+"@
+Set-Content -LiteralPath $startupCmd -Value $startupBody -Encoding ASCII
 
-Stop-ScheduledTask -TaskName 'Orbit Instagram Manual Likes' -ErrorAction SilentlyContinue
-Register-ScheduledTask -TaskName 'Orbit Instagram Manual Likes' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
-Start-ScheduledTask -TaskName 'Orbit Instagram Manual Likes'
-Start-Sleep -Seconds 2
-$state = (Get-ScheduledTask -TaskName 'Orbit Instagram Manual Likes').State
-Write-Output "Worker Like avviato con auto-restart e log: $state"
+$proc = Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
+    '-NoProfile',
+    '-ExecutionPolicy', 'Bypass',
+    '-File', ('"{0}"' -f $runner)
+) -PassThru
+
+Start-Sleep -Seconds 4
+$running = Get-CimInstance Win32_Process | Where-Object {
+    $_.CommandLine -and $_.CommandLine -like '*run-orbit-manual.ps1*'
+}
+if (-not $running) {
+    Write-Output 'ERRORE: worker manuale non avviato. Ultime righe log:'
+    if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 30 }
+    throw 'Worker Like Orbit non in esecuzione'
+}
+Write-Output 'Worker Like: Running (avvio diretto + Esecuzione automatica Windows)'
