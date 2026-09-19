@@ -64,3 +64,18 @@ test('General feed reports verified, pending, and already handled totals separat
   assert.match(page, /da valutare/);
   assert.match(page, /già gestiti/);
 });
+
+test('General feed returns every pending post without pagination limits', () => {
+  const route = readFileSync(new URL('../app/api/agent/instagram-likes/route.ts', import.meta.url), 'utf8');
+  const page = readFileSync(new URL('../app/page.tsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(route, /LIMIT 20|OFFSET \?/);
+  assert.doesNotMatch(page, /20 post per pagina|likePage/);
+  assert.match(page, /tutti i post non ancora gestiti/);
+});
+
+test('General collector walks the complete roster until its real end', () => {
+  const source = readFileSync(new URL('../agent/orbit_manual_instagram.py', import.meta.url), 'utf8');
+  assert.match(source, /def load_all_general_rows/);
+  assert.match(source, /while unchanged_at_end < 3/);
+  assert.match(source, /rows = load_all_general_rows\(page\)/);
+});

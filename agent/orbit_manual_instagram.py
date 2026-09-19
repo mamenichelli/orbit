@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import time
 import requests
+import sys
 from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout, Error as BrowserError
@@ -22,6 +23,11 @@ from orbit_instagram_agent import load_config, required
 from orbit_browser_actions import (AccountVerificationUnavailable, assert_account, browser_context, checked_navigation,
     conversation_title, gateway_post, like_post, mark_thread_rows, post_id,
     load_state, save_state, record_like_event, sync_like_events)
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
 def _update_local_like_state(config_path, config, shortcode, status):
@@ -262,6 +268,7 @@ def inbox_signature(page):
       return candidates.filter(n=>{
         const r=n.getBoundingClientRect();
         return r.y>=pane.bottom && r.x<=pane.right+40 && r.right>=pane.left-10
+          && r.width>=pane.width*.6 && r.width<=pane.width*1.2
           && r.height>=44 && r.height<=180 && n.querySelector('img') && n.innerText.trim();
       }).map(n=>{
         const title=n.innerText.trim().split(String.fromCharCode(10))[0];
@@ -283,6 +290,7 @@ def mark_general_rows(page):
       const rows=candidates.filter(n=>{
         const r=n.getBoundingClientRect();
         return r.y>=pane.bottom && r.x<=pane.right+40 && r.right>=pane.left-10
+          && r.width>=pane.width*.6 && r.width<=pane.width*1.2
           && r.height>=44 && r.height<=180 && n.querySelector('img') && n.innerText.trim();
       });
       return rows.map((n,index)=>{
@@ -292,6 +300,34 @@ def mark_general_rows(page):
         return {index,title,href,key:title+'|'+href+'|'+(n.querySelector('img')?.src||'').split('?')[0]};
       });
     }''')
+
+
+def load_all_general_rows(page):
+    """Read the complete virtualized General roster, stopping only at its real end."""
+    known = {}
+    unchanged_at_end = 0
+    while unchanged_at_end < 3:
+        rows = mark_general_rows(page)
+        before = len(known)
+        for row in rows:
+            known[row["key"]] = row
+        movement = page.evaluate('''() => {
+          const row=document.querySelector('[data-orbit-thread-row]');if(!row)return {moved:false,end:true};
+          let pane=row.parentElement;
+          while(pane && !(pane.scrollHeight>pane.clientHeight+10 && /auto|scroll/.test(getComputedStyle(pane).overflowY))) pane=pane.parentElement;
+          if(!pane)return {moved:false,end:true};
+          const old=pane.scrollTop;const end=old+pane.clientHeight>=pane.scrollHeight-4;
+          if(!end)pane.scrollTop=Math.min(pane.scrollHeight-pane.clientHeight,old+pane.clientHeight*.85);
+          return {moved:pane.scrollTop!==old,end};
+        }''')
+        page.wait_for_timeout(900)
+        if movement.get("end") and len(known) == before:
+            unchanged_at_end += 1
+        elif not movement.get("moved") and len(known) == before:
+            unchanged_at_end += 1
+        else:
+            unchanged_at_end = 0
+    return list(known.values())
 
 
 def read_visible_posts(page, known_cards=None, known_events=None, on_found=None):
@@ -406,10 +442,10 @@ def collect(config_path, publish_approved=False, history_pages=40, on_group=None
             return_to_general(page)
 
             deadline = time.monotonic() + 30
-            rows = mark_general_rows(page)
+            rows = load_all_general_rows(page)
             while not rows and time.monotonic() < deadline:
                 page.wait_for_timeout(1000)
-                rows = mark_general_rows(page)
+                rows = load_all_general_rows(page)
             if not rows:
                 raise RuntimeError("Conversazioni Generali non caricate: raccolta interrotta")
 

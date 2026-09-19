@@ -92,8 +92,9 @@ h1,h2 { font-family:"Manrope",sans-serif; margin:0; letter-spacing:-.5px; } h1{f
 .manual-like-button{min-height:64px;min-width:180px;padding:16px 24px;border:0;border-radius:12px;background:var(--green);color:white;font-size:18px;font-weight:700;cursor:pointer}
 .manual-like-button:disabled{background:#e3e9e5;color:#596960;cursor:default}.manual-like-button:focus-visible{outline:3px solid #7cbb18;outline-offset:4px}
 .manual-post-actions{display:grid;gap:10px}.skip-post-button{min-height:44px;padding:10px 24px;border:1px solid var(--line);border-radius:12px;background:white;color:var(--ink);font-size:16px;cursor:pointer}.skip-post-button:disabled{cursor:default;opacity:.5}.skip-post-button:focus-visible{outline:3px solid #7cbb18;outline-offset:4px}
+.instagram-session-control{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:14px 16px;margin:14px 0;border:1px solid var(--line);border-radius:12px;background:#f7faf8}.instagram-session-control>div{display:grid;gap:4px}.instagram-session-control strong{font-size:15px}.instagram-session-control span{font-size:14px;color:var(--muted);line-height:1.4}.instagram-session-control .secondary{flex:0 0 auto;min-height:44px;font-size:14px}.instagram-session-control .secondary:disabled{opacity:.55;cursor:wait}
 .manual-post-preview{max-width:220px;width:100%;height:200px;object-fit:cover;border-radius:10px}.manual-post-caption{font-size:16px;line-height:1.5;overflow-wrap:anywhere;margin:8px 0}
-@media(max-width:760px){.like-history-row{grid-template-columns:1fr;gap:12px}.like-history-panel{padding:18px}}
+@media(max-width:760px){.like-history-row{grid-template-columns:1fr;gap:12px}.like-history-panel{padding:18px}.instagram-session-control{align-items:stretch;flex-direction:column}.instagram-session-control .secondary{width:100%}}
 @media(max-width:760px){
   .strategy-live,.opportunities-focus .right-stack{grid-template-columns:1fr}
   .permission-banner{align-items:flex-start;flex-direction:column}.permission-banner a{width:100%;text-align:center}.media-row{grid-template-columns:28px minmax(0,1fr) auto}.media-stats{display:none!important}.module-grid{grid-template-columns:1fr}

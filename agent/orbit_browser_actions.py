@@ -69,7 +69,7 @@ def record_like_event(state: dict, shortcode: str, groups: list[dict], status: s
         if known.get(group["threadPath"]) != group:
             known[group["threadPath"]] = group
             event["pending"] = True
-    event["groups"] = list(known.values())[:50]
+    event["groups"] = list(known.values())
 
 
 def migrate_like_history(state: dict) -> None:

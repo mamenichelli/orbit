@@ -17,9 +17,9 @@ class ManualIntentTests(unittest.TestCase):
     def test_roster_excludes_buttons_above_general_and_recovers_non_chat_navigation(self):
         source=Path(__file__).with_name('orbit_manual_instagram.py').read_text(encoding='utf-8')
         self.assertEqual(source.count('r.y>=pane.bottom'),2)
-        guard=source.index('if not re.fullmatch(r"/direct/t/')
-        self.assertLess(guard,source.index('select_general(page)',guard))
-        self.assertIn('checked_collection_navigation(page, "https://www.instagram.com/direct/inbox/")',source[guard:guard+550])
+        self.assertEqual(source.count('r.width>=pane.width*.6'),2)
+        self.assertIn('def return_to_general(page):',source)
+        self.assertIn('return_to_general(page)',source[source.index('if not re.fullmatch(r"/direct/t/'):])
     def test_collection_waits_for_real_general_ui_not_document_loaded_event(self):
         source=Path(__file__).with_name('orbit_manual_instagram.py').read_text(encoding='utf-8')
         self.assertIn('page.goto(url, wait_until="commit", timeout=45000)',source)
@@ -28,7 +28,8 @@ class ManualIntentTests(unittest.TestCase):
     def test_already_open_latest_chat_is_not_skipped(self):
         source=Path(__file__).with_name('orbit_manual_instagram.py').read_text(encoding='utf-8')
         self.assertNotIn('Chat non cambiata: salto',source)
-        self.assertIn('header.inner_text().strip()[:200] != observed_title[:200]',source)
+        self.assertIn('a[href*="/direct/t/"]',source)
+        self.assertIn('page.wait_for_url(',source)
     def test_collector_repeats_instead_of_stopping_after_one_scan(self):
         with patch('orbit_manual_instagram.collector_lock', return_value=nullcontext()), \
              patch('orbit_manual_instagram.load_config',return_value={'ORBIT_INSTAGRAM_USERNAME':'test'}), \
@@ -46,15 +47,15 @@ class ManualIntentTests(unittest.TestCase):
         self.assertIn("history_pages=40 if deep_scan else 1",source)
         self.assertIn("max(completed,attempted)",source)
         self.assertIn("Raccolta rinviata per interfaccia Instagram non pronta",source)
-    def test_manual_worker_recovers_only_transient_identity_and_browser_failures(self):
+    def test_manual_worker_restarts_without_replaying_a_completed_job(self):
         source=Path(__file__).with_name('orbit_manual_instagram.py').read_text(encoding='utf-8')
-        self.assertIn('except AccountVerificationUnavailable:',source)
-        self.assertIn('except BrowserError:',source)
-        self.assertNotIn('except RuntimeError:\n            logging.warning("Identità Instagram',source)
+        self.assertIn('while True:\n        try:',source)
+        self.assertIn('"action": "complete"',source)
+        self.assertIn('Conferma Orbit rinviata: il comando non sarà ripetuto',source)
     def test_each_post_is_persisted_before_later_navigation_can_time_out(self):
         source=Path(__file__).with_name('orbit_manual_instagram.py').read_text(encoding='utf-8')
         self.assertLess(source.index('if on_found: on_found(pid, found[pid])'),source.index('if not opened:'))
-        self.assertLess(source.index('show_latest_messages(page)\n'),source.index('seen = set()'))
+        self.assertLess(source.index('show_latest_messages(page)'),source.index('seen: set[str]'))
     def test_continuous_collection_requires_export_approval(self):
         with self.assertRaises(RuntimeError):watch_collected_posts(Path('.env.agent'), False)
     def test_general_tab_waits_until_primary_rows_are_replaced(self):

@@ -102,6 +102,11 @@ type LikeHistory = {
     likedAt: string | null; observedAt: string; groups: { title: string; threadPath: string }[]; metadata?: { authorUsername?: string; publishedAt?: string | null } }[];
 };
 
+type BrowserAuthState = {
+  requested_at: number; started_request_at: number; completed_request_at: number;
+  completed_at: number; last_seen: number; required: number; error: string;
+};
+
 function likeDate(value: string) {
   const date = new Date(value);
   return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat("it-IT", {
@@ -306,15 +311,14 @@ export default function Home() {
   const [syncError, setSyncError] = useState("");
   const [hiddenActionIds, setHiddenActionIds] = useState<Set<number>>(() => new Set());
   const [listPages, setListPages] = useState<Record<string, number>>({});
-  const [likePage, setLikePage] = useState(1);
   const [likeHistory, setLikeHistory] = useState<LikeHistory | null>(null);
   const [likeHistoryError, setLikeHistoryError] = useState("");
   const [manualLikes, setManualLikes] = useState<Record<string, { id: string; startedAt: number }>>({});
   const manualRequests = useRef<Record<string, { id: string; startedAt: number }>>({});
   const [manualMessage, setManualMessage] = useState("");
   const [collectionMessage,setCollectionMessage]=useState('');
-  const likePageRef=useRef(likePage);
-  useEffect(()=>{likePageRef.current=likePage;},[likePage]);
+  const [browserAuth,setBrowserAuth]=useState<BrowserAuthState | null>(null);
+  const [browserAuthMessage,setBrowserAuthMessage]=useState('');
   const hiddenPosts = useRef(new Set<string>());
   const skipPost = async (shortcode: string) => {
     if (manualRequests.current[shortcode] || hiddenPosts.current.has(shortcode)) return;
@@ -327,7 +331,7 @@ export default function Home() {
       if (!response.ok) throw new Error(result.error ?? "Skip non salvato");
     } catch (error) {
       hiddenPosts.current.delete(shortcode);
-      setLikeHistory(current => current ? { ...current, total: current.total + 1, events: previous && !current.events.some(event => event.shortcode === shortcode) ? [previous, ...current.events].slice(0, 20) : current.events } : current);
+      setLikeHistory(current => current ? { ...current, total: current.total + 1, events: previous && !current.events.some(event => event.shortcode === shortcode) ? [previous, ...current.events] : current.events } : current);
       setManualMessage(error instanceof Error ? error.message : "Skip non salvato: riprova");
     }
   };
@@ -386,11 +390,10 @@ export default function Home() {
       try {
         const statusResponse=await fetch('/api/instagram/refresh-posts',{cache:'no-store',signal:controller.signal});
         const status=await statusResponse.json();if(!statusResponse.ok)throw Error(status.error);
-        const page=likePageRef.current;
-        const response=await fetch(`/api/agent/instagram-likes?page=${page}`,{cache:'no-store',signal:controller.signal});
+        const response=await fetch('/api/agent/instagram-likes',{cache:'no-store',signal:controller.signal});
         const result=await response.json() as LikeHistory;
         if(!response.ok)throw Error('Post temporaneamente non disponibili');
-        if(!controller.signal.aborted&&page===likePageRef.current){const hidden=result.events.filter(event=>hiddenPosts.current.has(event.shortcode));setLikeHistory({...result,total:Math.max(0,result.total-hidden.length),events:result.events.filter(event=>!hiddenPosts.current.has(event.shortcode))});}
+        if(!controller.signal.aborted){const hidden=result.events.filter(event=>hiddenPosts.current.has(event.shortcode));setLikeHistory({...result,total:Math.max(0,result.total-hidden.length),events:result.events.filter(event=>!hiddenPosts.current.has(event.shortcode))});}
         if(controller.signal.aborted)return;
         if(version && status.completed_request_at>=version){setCollectionMessage('Aggiornamento Instagram completato');return;}
         setCollectionMessage(status.error || (Date.now()-status.last_seen>120000 ? 'Attendo il collegamento della raccolta Instagram: il PC deve essere acceso' : 'Aggiornamento da Instagram in corso: i post appaiono appena verificati'));
@@ -410,7 +413,7 @@ export default function Home() {
     const controller = new AbortController();
     const load = async () => {
       try {
-        const response = await fetch(`/api/agent/instagram-likes?page=${likePage}`, {
+        const response = await fetch('/api/agent/instagram-likes', {
           cache: "no-store", signal: controller.signal,
         });
         const body = await response.json();
@@ -423,11 +426,41 @@ export default function Home() {
     void load();
     const timer = window.setInterval(() => void load(), 30_000);
     return () => { controller.abort(); window.clearInterval(timer); };
-  }, [likePage]);
+  }, []);
 
   useEffect(() => {
-    if (likeHistory) setLikePage(page => Math.min(page, Math.max(1, Math.ceil(likeHistory.total / 20))));
-  }, [likeHistory?.total]);
+    const controller = new AbortController();
+    const load = async () => {
+      try {
+        const response = await fetch('/api/instagram/browser-auth', { cache: 'no-store', signal: controller.signal });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error ?? 'Stato sessione non disponibile');
+        if (!controller.signal.aborted) {
+          const next = result as BrowserAuthState;
+          setBrowserAuth(next);
+          if (next.requested_at > 0 && next.completed_request_at >= next.requested_at) setBrowserAuthMessage('Sessione Instagram rigenerata. La raccolta di Generale è ripartita.');
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) setBrowserAuthMessage(error instanceof Error ? error.message : 'Stato sessione non disponibile');
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 3000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, []);
+
+  const regenerateInstagramSession = async () => {
+    setBrowserAuthMessage('Apro una finestra Edge dedicata a @ma.menichelli…');
+    try {
+      const response = await fetch('/api/instagram/browser-auth', { method: 'POST', headers: { 'x-orbit-manual': '1' } });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? 'Rinnovo non richiesto');
+      setBrowserAuth(current => ({ ...(current ?? { started_request_at: 0, completed_request_at: 0, completed_at: 0, last_seen: 0, required: 1, error: '' }), requested_at: Number(result.requested_at ?? Date.now()) }));
+      setBrowserAuthMessage('Richiesta inviata. Completa l’accesso nella finestra Edge che si apre sul PC.');
+    } catch (error) {
+      setBrowserAuthMessage(error instanceof Error ? error.message : 'Rinnovo non richiesto: riprova');
+    }
+  };
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -956,6 +989,11 @@ export default function Home() {
           <article className="panel like-history-panel">
             <div className="panel-head"><div><p className="eyebrow">SOLO GENERALE · @{likeHistory?.accountUsername ?? "ma.menichelli"}</p><h2>Post da Generale</h2></div><span className="daily-count">{formatNumber(likeHistory?.total ?? 0)}</span></div>
             <p className="like-history-note">Un clic su «Mi piace» agisce solo su quel post, senza uscire da Orbit. {likeHistory?.manualOnline ? "Collegamento Instagram attivo." : "Collegamento Instagram offline: accendi il PC e avvia l’agente manuale."} {likeHistory ? `${likeHistory.verifiedTotal} post verificati in Generale · ${likeHistory.total} da valutare · ${likeHistory.handledTotal} già gestiti` : ""}</p>
+            <div className="instagram-session-control">
+              <div><strong>Sessione browser Instagram</strong><span>{browserAuth?.error || (browserAuth?.required ? 'Accesso scaduto: rigenera la sessione per riprendere la raccolta.' : browserAuth?.last_seen ? 'Pronta per la raccolta dei gruppi in Generale.' : 'L’agente locale non è ancora collegato; la richiesta resterà in attesa.')}</span></div>
+              <button className="secondary" disabled={Boolean(browserAuth && browserAuth.requested_at > browserAuth.completed_request_at)} onClick={() => void regenerateInstagramSession()}>Rigenera sessione Instagram</button>
+            </div>
+            {browserAuthMessage && <p className="like-history-note" role="status">{browserAuthMessage}</p>}
             {manualMessage && <p className="like-history-note" role="status">{manualMessage}</p>}
             {collectionMessage && <p className="like-history-note" role="status">{collectionMessage}</p>}
             {likeHistoryError && <p role="status" className="sync-error">{likeHistoryError}. I dati già caricati restano visibili.</p>}
@@ -977,13 +1015,7 @@ export default function Home() {
               </button>
               <button className="skip-post-button" disabled={Boolean(manualLikes[event.shortcode])} onClick={() => void skipPost(event.shortcode)} aria-label={`Salta definitivamente il post ${event.shortcode}`}>Skip</button></div>
             </div>)}
-            {likeHistory && likeHistory.total > 20 && <div className="list-pagination">
-              <span>20 post per pagina · {formatNumber(likeHistory.total)} registrati</span><div>
-                <button disabled={likePage <= 1} onClick={() => setLikePage(page => page - 1)}>← Precedenti</button>
-                <strong>{likePage} / {Math.ceil(likeHistory.total / 20)}</strong>
-                <button disabled={likePage * 20 >= likeHistory.total} onClick={() => setLikePage(page => page + 1)}>Successivi →</button>
-              </div>
-            </div>}
+            {likeHistory && likeHistory.total > 0 && <p className="like-history-note">Sono mostrati tutti i post non ancora gestiti trovati nei gruppi di Generale, senza limiti numerici.</p>}
           </article>
         )}
       </section>

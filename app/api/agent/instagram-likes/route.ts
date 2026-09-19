@@ -46,7 +46,7 @@ export async function POST(request: Request) {
       || (event.metadata?.authorUsername !== undefined && event.metadata.authorUsername !== "" && !/^[a-zA-Z0-9._]{1,30}$/.test(event.metadata.authorUsername))
       || (event.metadata?.publishedAt !== undefined && event.metadata.publishedAt !== null && !validDate(event.metadata.publishedAt))
       || (event.status === "applied" ? !validDate(event.likedAt) : event.likedAt !== null)
-      || !Array.isArray(event.groups) || event.groups.length > 50
+      || !Array.isArray(event.groups)
       || event.groups.some(group => !group || typeof group.title !== "string" || !group.title.trim()
         || group.title.length > 200 || !/^\/direct\/t\/[^/?#\s]+\/$/.test(group.threadPath ?? "")
         || (group.folder !== undefined && group.folder !== "general")
@@ -74,22 +74,20 @@ export async function GET(request: Request) {
   if (!request.headers.get("oai-authenticated-user-id") && !(await agentAuthorized(request))) {
     return Response.json({ error: "Accedi a Orbit per leggere lo storico" }, { status: 401 });
   }
-  const rawPage = Number(new URL(request.url).searchParams.get("page") ?? 1);
-  const page = Number.isFinite(rawPage) ? Math.max(1, Math.min(100000, Math.floor(rawPage))) : 1;
   try {
     const db = getRawDb();
     const [rows, counts, verifiedCounts] = await Promise.all([
       db.prepare(`SELECT event_id, shortcode, status, liked_at, observed_at, groups_json, metadata_json
         FROM browser_like_events WHERE account_username = ? AND ${visibleGeneralPostPredicate}
-        ORDER BY COALESCE(liked_at, observed_at) DESC, event_id DESC LIMIT 20 OFFSET ?`)
-        .bind(account, (page - 1) * 20).all<{ event_id: string; shortcode: string; status: string; liked_at: string | null; observed_at: string; groups_json: string; metadata_json: string }>(),
+        ORDER BY COALESCE(liked_at, observed_at) DESC, event_id DESC`)
+        .bind(account).all<{ event_id: string; shortcode: string; status: string; liked_at: string | null; observed_at: string; groups_json: string; metadata_json: string }>(),
       db.prepare(`SELECT COUNT(*) AS total, SUM(status = 'applied') AS applied
         FROM browser_like_events WHERE account_username = ? AND ${visibleGeneralPostPredicate}`).bind(account).first<{ total: number; applied: number | null }>(),
       db.prepare(`SELECT COUNT(*) AS total
         FROM browser_like_events WHERE account_username = ? AND ${generalPostPredicate}`).bind(account).first<{ total: number }>(),
     ]);
     return Response.json({
-      accountUsername: account, page, pageSize: 20, total: counts?.total ?? 0, applied: counts?.applied ?? 0,
+      accountUsername: account, page: 1, pageSize: counts?.total ?? 0, total: counts?.total ?? 0, applied: counts?.applied ?? 0,
       verifiedTotal: verifiedCounts?.total ?? 0,
       handledTotal: Math.max(0, (verifiedCounts?.total ?? 0) - (counts?.total ?? 0)),
       manualOnline: await manualAgentOnline(),
